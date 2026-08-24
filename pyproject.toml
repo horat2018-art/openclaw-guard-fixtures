@@ -1,0 +1,11 @@
+[build-system]
+requires = []
+build-backend = "setuptools.build_meta:__legacy__"
+
+[project]
+name = "hai-deterministic-evidence"
+version = "0.1.0"
+dependencies = []
+
+[project.scripts]
+hai-evidence = "hai_evidence.cli:main"
