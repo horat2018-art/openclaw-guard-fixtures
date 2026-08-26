@@ -1,0 +1,8 @@
+{
+  "artifact_type": "STATE",
+  "authority_level": 1,
+  "claim_scope": "s",
+  "claim_value": "A",
+  "current_validity": "VALID",
+  "phase_id": "SYN"
+}

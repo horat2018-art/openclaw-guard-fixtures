@@ -1,0 +1,6 @@
+{
+  "artifact_type": "NOTE",
+  "current_validity": "HISTORICAL_BLOCK_ONLY",
+  "phase_id": "SYN",
+  "superseded_by": "later.json"
+}
