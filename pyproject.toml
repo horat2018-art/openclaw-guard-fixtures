@@ -1,0 +1,14 @@
+[project]
+name = "hai-mr05"
+version = "0.0.0"
+description = "HAI MR-05 deterministic integration skeleton"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.hai_mr05.skeleton]
+phase = "HAI-MR-05C-R2"
+package = "hai_mr05"
+source_root = "src/hai_mr05/"
+test_root = "tests/"
+test_command = "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v"
+implementation = "DEFERRED"
