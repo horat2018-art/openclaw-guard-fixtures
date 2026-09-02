@@ -8,24 +8,36 @@ from hai_mr05 import failures
 class BoundaryTests(unittest.TestCase):
     def test_source_has_no_external_client_or_execution_imports(self):
         source_root = Path(__file__).parents[1] / 'src' / 'hai_mr05'
-        banned = (
+        globally_banned = (
             'import requests', 'import httpx', 'import aiohttp', 'import socket',
-            'import urllib', 'import subprocess', 'import openai', 'import anthropic',
-            'import boto3', 'os.getenv', 'os.environ', 'socket.', 'requests.',
-            'httpx.', 'aiohttp.',
+            'import urllib', 'import openai', 'import anthropic', 'import boto3',
+            'os.getenv', 'os.environ', 'socket.', 'requests.', 'httpx.', 'aiohttp.',
         )
+        operational_tokens = ('import subprocess', 'subprocess.', 'open(')
         for path in source_root.glob('*.py'):
             text = path.read_text(encoding='utf-8')
-            for token in banned:
+            for token in globally_banned:
                 with self.subTest(path=path.name, token=token):
                     self.assertNotIn(token, text)
-            with self.subTest(path=path.name, token='latest'):
-                self.assertNotIn('latest', text.lower())
+            if path.name == 'dependency_runtime.py':
+                for token in operational_tokens:
+                    with self.subTest(path=path.name, required_operational_token=token):
+                        self.assertIn(token, text)
+                self.assertIn('"latest_resolution": False', text)
+                self.assertIn('"alternate_clone": False', text)
+                self.assertIn('AUTO_RETRY_IMPLEMENTATION_COUNT = 0', text)
+                self.assertIn('AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0', text)
+            else:
+                for token in operational_tokens:
+                    with self.subTest(path=path.name, token=token):
+                        self.assertNotIn(token, text)
+                with self.subTest(path=path.name, token='latest'):
+                    self.assertNotIn('latest', text.lower())
 
     def test_source_imports_are_stdlib_or_local_only(self):
         source_root = Path(__file__).parents[1] / 'src' / 'hai_mr05'
         prohibited = {
-            'requests', 'httpx', 'aiohttp', 'socket', 'urllib', 'subprocess',
+            'requests', 'httpx', 'aiohttp', 'socket', 'urllib',
             'openai', 'anthropic', 'boto3', 'http', 'ssl',
         }
         for path in source_root.glob('*.py'):
@@ -40,6 +52,9 @@ class BoundaryTests(unittest.TestCase):
                 for name in names:
                     with self.subTest(path=path.name, module=name):
                         self.assertNotIn(name, prohibited)
+                    if name == 'subprocess':
+                        with self.subTest(path=path.name, module=name, boundary='operational-only'):
+                            self.assertEqual(path.name, 'dependency_runtime.py')
 
     def test_fail_closed_exception_is_available(self):
         with self.assertRaises(failures.MR05PhaseNotImplementedError):
