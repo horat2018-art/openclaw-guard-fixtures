@@ -61,6 +61,8 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('STATE_TRANSITION_EXECUTION_COUNT = 0', text)
                 self.assertIn('HUMAN_APPROVAL_EXECUTION_COUNT = 0', text)
                 self.assertIn('HUMAN_GATE_EXECUTION_COUNT = 0', text)
+                self.assertIn('MR03_EXECUTION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('MR04_EXECUTION_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('NETWORK_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('PROVIDER_CLIENT_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('MODEL_CALL_IMPLEMENTATION_COUNT = 0', text)

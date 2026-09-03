@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
+from . import dependency_runtime
 from .evidence import EvidenceManifest, RunRecord, build_evidence_manifest, build_run_record
 from .failures import phase_not_implemented
 from .source_acquisition import AcquisitionResult, capture_source
@@ -34,8 +35,8 @@ OPERATIONAL_ORCHESTRATION_IMPLEMENTATION_COUNT = 1
 STATE_TRANSITION_EXECUTION_COUNT = 0
 HUMAN_APPROVAL_EXECUTION_COUNT = 0
 HUMAN_GATE_EXECUTION_COUNT = 0
-MR03_EXECUTION_IMPLEMENTATION_COUNT = 0
-MR04_EXECUTION_IMPLEMENTATION_COUNT = 0
+MR03_EXECUTION_IMPLEMENTATION_COUNT = 1
+MR04_EXECUTION_IMPLEMENTATION_COUNT = 1
 FILESYSTEM_WRITE_IMPLEMENTATION_COUNT = 0
 SUBPROCESS_EXECUTION_COUNT = 0
 NETWORK_IMPLEMENTATION_COUNT = 0
@@ -64,6 +65,8 @@ class ControllerOrchestrationResult:
     acquisition: AcquisitionResult
     run_record: RunRecord
     evidence_manifest: EvidenceManifest
+    mr03_result: Mapping[str, object] | None = None
+    mr04_result: Mapping[str, object] | None = None
     controller_progress_authority: bool = False
     human_approval: bool = False
     evidence_write_authority: bool = False
@@ -119,7 +122,7 @@ def _sha256_identity(value: object, field: str) -> str:
         raise ControllerPolicyError(f"{field} must be a lowercase SHA-256 identity")
     return value
 
-def orchestrate_deterministic_run(*, transition_kind: object, approved_source_root: object, source_relative_path: object, source_alias: object, provenance_owner: object, repository_commit: object, task_identity: object, contract_identities: object, dependency_identities: object, provenance_identity: object, metrics_identity: object, operational_counters: object, artifact_identities: object = (), source_type: object = "LOCAL_FILE", classification: object = "INTERNAL", content_kind: object = None) -> ControllerOrchestrationResult:
+def orchestrate_deterministic_run(*, transition_kind: object, approved_source_root: object, source_relative_path: object, source_alias: object, provenance_owner: object, repository_commit: object, task_identity: object, contract_identities: object, dependency_identities: object, provenance_identity: object, metrics_identity: object, operational_counters: object, artifact_identities: object = (), source_type: object = "LOCAL_FILE", classification: object = "INTERNAL", content_kind: object = None, dependency_task: object = None, normalization_identity: object = None, source_set_identity: object = None, byte_budget: object = None, token_estimate_metadata: object = None) -> ControllerOrchestrationResult:
     """Compose one deterministic local run without progressing workflow state."""
     transition = qualify_transition(transition_kind)
     if transition.transition_kind == TRANSITION_FAIL_CLOSED:
@@ -136,10 +139,38 @@ def orchestrate_deterministic_run(*, transition_kind: object, approved_source_ro
     provenance = _sha256_identity(provenance_identity, "provenance_identity")
     metrics = _sha256_identity(metrics_identity, "metrics_identity")
     acquisition = capture_source(approved_root=approved_source_root, relative_path=source_relative_path, source_alias=source_alias, provenance_owner=provenance_owner, source_type=source_type, classification=classification, content_kind=content_kind, observational_metadata={})
-    run = build_run_record(repository_commit=repository_commit, task_identity=task, contract_identities=contracts, dependency_identities=dependencies, input_identities=(acquisition.capture_identity,))
+    dependency_requested = any(value is not None for value in (dependency_task, normalization_identity, source_set_identity, byte_budget, token_estimate_metadata))
+    mr03_result: Mapping[str, object] | None = None
+    mr04_result: Mapping[str, object] | None = None
+    bound_dependencies = dependencies
+    effective_counters = dict(counters)
+    if dependency_requested:
+        if not isinstance(dependency_task, Mapping):
+            raise ControllerPolicyError("dependency_task must be a mapping when frozen dependency execution is requested")
+        normalization = _sha256_identity(normalization_identity, "normalization_identity")
+        source_set = _sha256_identity(source_set_identity, "source_set_identity")
+        if not isinstance(byte_budget, Mapping) or not isinstance(token_estimate_metadata, Mapping):
+            raise ControllerPolicyError("byte_budget and token_estimate_metadata must be mappings")
+        if type(approved_source_root) is not str:
+            raise ControllerPolicyError("approved_source_root must be an exact string for dependency execution")
+        mr03_result = dependency_runtime.invoke_mr03(
+            approved_source_root, dict(dependency_task), task_identity=task,
+            normalization_identity=normalization, source_set_identity=source_set,
+            capture_identity=acquisition.capture_identity,
+        )
+        mr04_result = dependency_runtime.invoke_mr04(
+            approved_source_root, dict(dependency_task), mr03_result, task_identity=task,
+            source_set_identity=source_set, normalization_identity=normalization,
+            byte_budget=dict(byte_budget), token_estimate_metadata=dict(token_estimate_metadata),
+        )
+        mr03_identity = _sha256_identity(mr03_result.get("result_identity"), "mr03_result_identity")
+        mr04_identity = _sha256_identity(mr04_result.get("result_identity"), "mr04_result_identity")
+        bound_dependencies = tuple(sorted(set(dependencies + (mr03_identity, mr04_identity))))
+        effective_counters.update({"mr03_execution": 1, "mr04_execution": 1, "subprocess": 1, "filesystem_dependency": 1})
+    run = build_run_record(repository_commit=repository_commit, task_identity=task, contract_identities=contracts, dependency_identities=bound_dependencies, input_identities=(acquisition.capture_identity,))
     manifest_artifacts = tuple(sorted(set(artifacts + (acquisition.captured_source.descriptor.source_id,))))
-    manifest = build_evidence_manifest(run_identity=run.run_identity, artifact_identities=manifest_artifacts, provenance_identity=provenance, metrics_identity=metrics, operational_counters=counters)
-    return ControllerOrchestrationResult(transition=transition, acquisition=acquisition, run_record=run, evidence_manifest=manifest)
+    manifest = build_evidence_manifest(run_identity=run.run_identity, artifact_identities=manifest_artifacts, provenance_identity=provenance, metrics_identity=metrics, operational_counters=effective_counters)
+    return ControllerOrchestrationResult(transition=transition, acquisition=acquisition, run_record=run, evidence_manifest=manifest, mr03_result=mr03_result, mr04_result=mr04_result)
 
 def not_implemented(*args: object, **kwargs: object) -> None:
     del args, kwargs
