@@ -30,7 +30,7 @@ class SkeletonContractTests(unittest.TestCase):
     def test_callable_placeholders_fail_closed(self):
         for name in MODULE_NAMES:
             module = importlib.import_module(f"hai_mr05.{name}")
-            if name in {'contracts', 'identity', 'failures', 'discovery', 'normalization', 'verifier'}:
+            if name in {'contracts', 'identity', 'failures', 'discovery', 'normalization', 'verifier', 'evidence'}:
                 continue
             if name == 'cli':
                 callable_placeholder = module.main
