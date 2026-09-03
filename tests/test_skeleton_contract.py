@@ -30,7 +30,7 @@ class SkeletonContractTests(unittest.TestCase):
     def test_callable_placeholders_fail_closed(self):
         for name in MODULE_NAMES:
             module = importlib.import_module(f"hai_mr05.{name}")
-            if name in {'contracts', 'identity', 'failures', 'discovery', 'normalization', 'verifier', 'evidence'}:
+            if name in {'contracts', 'identity', 'failures', 'discovery', 'normalization', 'verifier', 'evidence', 'controller'}:
                 continue
             if name == 'cli':
                 callable_placeholder = module.main
@@ -1503,8 +1503,8 @@ class SkeletonContractTests(unittest.TestCase):
         for value in ('', 'PASS_FOR_REVIEW', 'APPROVE', None, 1):
             with self.subTest(value=value), self.assertRaises(controller.ControllerPolicyError):
                 controller.qualify_transition(value)
+        self.assertEqual(controller.OPERATIONAL_ORCHESTRATION_IMPLEMENTATION_COUNT, 1)
         zero_names = (
-            'OPERATIONAL_ORCHESTRATION_IMPLEMENTATION_COUNT',
             'STATE_TRANSITION_EXECUTION_COUNT',
             'HUMAN_APPROVAL_EXECUTION_COUNT',
             'MR03_EXECUTION_IMPLEMENTATION_COUNT',

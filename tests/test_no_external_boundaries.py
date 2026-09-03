@@ -53,6 +53,22 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('FILESYSTEM_EVIDENCE_WRITE_COUNT = 1', text)
                 self.assertIn('AUTO_RETRY_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0', text)
+            elif path.name == 'controller.py':
+                for token in dependency_operational_tokens + source_read_tokens:
+                    with self.subTest(path=path.name, token=token):
+                        self.assertNotIn(token, text)
+                self.assertIn('OPERATIONAL_ORCHESTRATION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('STATE_TRANSITION_EXECUTION_COUNT = 0', text)
+                self.assertIn('HUMAN_APPROVAL_EXECUTION_COUNT = 0', text)
+                self.assertIn('HUMAN_GATE_EXECUTION_COUNT = 0', text)
+                self.assertIn('NETWORK_IMPLEMENTATION_COUNT = 0', text)
+                self.assertIn('PROVIDER_CLIENT_IMPLEMENTATION_COUNT = 0', text)
+                self.assertIn('MODEL_CALL_IMPLEMENTATION_COUNT = 0', text)
+                self.assertIn('MODEL_ROUTING_IMPLEMENTATION_COUNT = 0', text)
+                self.assertIn('AUTH_IMPLEMENTATION_COUNT = 0', text)
+                self.assertIn('AUTO_RETRY_IMPLEMENTATION_COUNT = 0', text)
+                self.assertIn('AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0', text)
+                self.assertIn('EVIDENCE_PERSISTENCE_COUNT = 0', text)
             else:
                 for token in dependency_operational_tokens + source_read_tokens:
                     with self.subTest(path=path.name, token=token):
