@@ -1506,6 +1506,7 @@ class SkeletonContractTests(unittest.TestCase):
         self.assertEqual(controller.OPERATIONAL_ORCHESTRATION_IMPLEMENTATION_COUNT, 1)
         self.assertEqual(controller.MR03_EXECUTION_IMPLEMENTATION_COUNT, 1)
         self.assertEqual(controller.MR04_EXECUTION_IMPLEMENTATION_COUNT, 1)
+        self.assertEqual(controller.EVIDENCE_PERSISTENCE_COUNT, 1)
         zero_names = (
             'STATE_TRANSITION_EXECUTION_COUNT',
             'HUMAN_APPROVAL_EXECUTION_COUNT',

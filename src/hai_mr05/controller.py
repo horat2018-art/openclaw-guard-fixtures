@@ -3,7 +3,8 @@
 This module composes already-qualified local, deterministic runtime primitives.
 It never executes Human Gate approval, workflow progression, dependency Git
 verification, network/provider/model/auth operations, retry, fallback, or Git
-mutation. Evidence persistence is intentionally outside this controller phase.
+mutation. Optional evidence persistence is delegated exclusively to the existing
+bounded evidence runtime and grants no workflow or execution authority.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
-from . import dependency_runtime
+from . import dependency_runtime, evidence
 from .evidence import EvidenceManifest, RunRecord, build_evidence_manifest, build_run_record
 from .failures import phase_not_implemented
 from .source_acquisition import AcquisitionResult, capture_source
@@ -46,7 +47,7 @@ MODEL_ROUTING_IMPLEMENTATION_COUNT = 0
 AUTH_IMPLEMENTATION_COUNT = 0
 AUTO_RETRY_IMPLEMENTATION_COUNT = 0
 AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0
-EVIDENCE_PERSISTENCE_COUNT = 0
+EVIDENCE_PERSISTENCE_COUNT = 1
 
 class ControllerPolicyError(ValueError):
     """A controller request is outside the frozen deterministic semantics."""
@@ -67,6 +68,7 @@ class ControllerOrchestrationResult:
     evidence_manifest: EvidenceManifest
     mr03_result: Mapping[str, object] | None = None
     mr04_result: Mapping[str, object] | None = None
+    persistence_result: evidence.PersistenceResult | None = None
     controller_progress_authority: bool = False
     human_approval: bool = False
     evidence_write_authority: bool = False
@@ -112,7 +114,7 @@ def _counters(value: object) -> Mapping[str, int]:
         if type(key) is not str or not key or type(counter) is not int or counter < 0:
             raise ControllerPolicyError("operational_counters are malformed")
         out[key] = counter
-    forbidden = {"network", "provider_client", "model_call", "model_routing", "auth", "human_approval", "human_gate", "auto_retry", "auto_fallback", "controller_progress", "git_operation", "evidence_persistence"}
+    forbidden = {"network", "provider_client", "model_call", "model_routing", "auth", "human_approval", "human_gate", "auto_retry", "auto_fallback", "controller_progress", "git_operation", "mr03_execution", "mr04_execution", "subprocess", "filesystem_dependency", "evidence_persistence", "filesystem_evidence_write"}
     if any(out.get(name, 0) != 0 for name in forbidden):
         raise ControllerPolicyError("forbidden operational counter is non-zero")
     return MappingProxyType(dict(sorted(out.items())))
@@ -122,13 +124,16 @@ def _sha256_identity(value: object, field: str) -> str:
         raise ControllerPolicyError(f"{field} must be a lowercase SHA-256 identity")
     return value
 
-def orchestrate_deterministic_run(*, transition_kind: object, approved_source_root: object, source_relative_path: object, source_alias: object, provenance_owner: object, repository_commit: object, task_identity: object, contract_identities: object, dependency_identities: object, provenance_identity: object, metrics_identity: object, operational_counters: object, artifact_identities: object = (), source_type: object = "LOCAL_FILE", classification: object = "INTERNAL", content_kind: object = None, dependency_task: object = None, normalization_identity: object = None, source_set_identity: object = None, byte_budget: object = None, token_estimate_metadata: object = None) -> ControllerOrchestrationResult:
+def orchestrate_deterministic_run(*, transition_kind: object, approved_source_root: object, source_relative_path: object, source_alias: object, provenance_owner: object, repository_commit: object, task_identity: object, contract_identities: object, dependency_identities: object, provenance_identity: object, metrics_identity: object, operational_counters: object, artifact_identities: object = (), source_type: object = "LOCAL_FILE", classification: object = "INTERNAL", content_kind: object = None, dependency_task: object = None, normalization_identity: object = None, source_set_identity: object = None, byte_budget: object = None, token_estimate_metadata: object = None, approved_evidence_root: object = None, evidence_relative_path: object = None) -> ControllerOrchestrationResult:
     """Compose one deterministic local run without progressing workflow state."""
     transition = qualify_transition(transition_kind)
     if transition.transition_kind == TRANSITION_FAIL_CLOSED:
         raise ControllerPolicyError("FAIL_CLOSED is terminal and executes no orchestration")
     if transition.human_gate_required:
         raise ControllerPolicyError("PROGRESS requires Human Gate; execution authority is absent")
+    persistence_requested = any(value is not None for value in (approved_evidence_root, evidence_relative_path))
+    if persistence_requested and (approved_evidence_root is None or evidence_relative_path is None):
+        raise ControllerPolicyError("approved_evidence_root and evidence_relative_path must be supplied together")
     contracts = _identity_sequence(contract_identities, "contract_identities")
     dependencies = _identity_sequence(dependency_identities, "dependency_identities")
     artifacts = _identity_sequence(artifact_identities, "artifact_identities", allow_empty=True)
@@ -167,10 +172,19 @@ def orchestrate_deterministic_run(*, transition_kind: object, approved_source_ro
         mr04_identity = _sha256_identity(mr04_result.get("result_identity"), "mr04_result_identity")
         bound_dependencies = tuple(sorted(set(dependencies + (mr03_identity, mr04_identity))))
         effective_counters.update({"mr03_execution": 1, "mr04_execution": 1, "subprocess": 1, "filesystem_dependency": 1})
+    if persistence_requested:
+        effective_counters.update({"evidence_persistence": 1, "filesystem_evidence_write": 1})
     run = build_run_record(repository_commit=repository_commit, task_identity=task, contract_identities=contracts, dependency_identities=bound_dependencies, input_identities=(acquisition.capture_identity,))
     manifest_artifacts = tuple(sorted(set(artifacts + (acquisition.captured_source.descriptor.source_id,))))
     manifest = build_evidence_manifest(run_identity=run.run_identity, artifact_identities=manifest_artifacts, provenance_identity=provenance, metrics_identity=metrics, operational_counters=effective_counters)
-    return ControllerOrchestrationResult(transition=transition, acquisition=acquisition, run_record=run, evidence_manifest=manifest, mr03_result=mr03_result, mr04_result=mr04_result)
+    persistence_result: evidence.PersistenceResult | None = None
+    if persistence_requested:
+        persistence_result = evidence.persist_evidence(
+            approved_root=approved_evidence_root,
+            relative_path=evidence_relative_path,
+            manifest=manifest,
+        )
+    return ControllerOrchestrationResult(transition=transition, acquisition=acquisition, run_record=run, evidence_manifest=manifest, mr03_result=mr03_result, mr04_result=mr04_result, persistence_result=persistence_result)
 
 def not_implemented(*args: object, **kwargs: object) -> None:
     del args, kwargs

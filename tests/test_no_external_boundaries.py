@@ -54,7 +54,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('AUTO_RETRY_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0', text)
             elif path.name == 'controller.py':
-                for token in dependency_operational_tokens + source_read_tokens:
+                for token in dependency_operational_tokens + evidence_write_tokens:
                     with self.subTest(path=path.name, token=token):
                         self.assertNotIn(token, text)
                 self.assertIn('OPERATIONAL_ORCHESTRATION_IMPLEMENTATION_COUNT = 1', text)
@@ -70,7 +70,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('AUTH_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('AUTO_RETRY_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0', text)
-                self.assertIn('EVIDENCE_PERSISTENCE_COUNT = 0', text)
+                self.assertIn('EVIDENCE_PERSISTENCE_COUNT = 1', text)
             else:
                 for token in dependency_operational_tokens + source_read_tokens:
                     with self.subTest(path=path.name, token=token):
