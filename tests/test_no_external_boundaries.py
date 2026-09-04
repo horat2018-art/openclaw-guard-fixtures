@@ -71,6 +71,23 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('AUTO_RETRY_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('EVIDENCE_PERSISTENCE_COUNT = 1', text)
+            elif path.name == 'human_gate.py':
+                for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
+                    with self.subTest(path=path.name, token=token):
+                        self.assertNotIn(token, text)
+                for name in (
+                    'AUTO_EXECUTE_AFTER_APPROVAL_COUNT = 0',
+                    'HUMAN_APPROVAL_EXECUTION_COUNT = 0',
+                    'HUMAN_DECISION_SIDE_EFFECT_COUNT = 0',
+                    'STATE_TRANSITION_EXECUTION_COUNT = 0',
+                    'NETWORK_IMPLEMENTATION_COUNT = 0',
+                    'PROVIDER_CLIENT_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_CALL_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_ROUTING_IMPLEMENTATION_COUNT = 0',
+                    'AUTH_IMPLEMENTATION_COUNT = 0',
+                ):
+                    with self.subTest(path=path.name, required_zero=name):
+                        self.assertIn(name, text)
             else:
                 for token in dependency_operational_tokens + source_read_tokens:
                     with self.subTest(path=path.name, token=token):

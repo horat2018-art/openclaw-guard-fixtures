@@ -2,7 +2,7 @@ import importlib
 import inspect
 import unittest
 
-from hai_mr05 import canonical, context_builder, contracts, controller, discovery, failures, identity, metrics, mr03_adapter, mr04_adapter, normalization, provenance, verifier
+from hai_mr05 import canonical, context_builder, contracts, controller, discovery, failures, human_gate, identity, metrics, mr03_adapter, mr04_adapter, normalization, provenance, verifier
 from hai_mr05.failures import Failure, FailureCode, FailureOwner, FailureSeverity, FailureState
 from hai_mr05.metrics import Metrics
 from hai_mr05.provenance import ProvenanceChain, ProvenanceEdge, ProvenanceNode, RelationType
@@ -1458,6 +1458,43 @@ class SkeletonContractTests(unittest.TestCase):
         self.assertEqual(verifier.VERIFIER_IMPLEMENTATION_COUNT, 1)
         with self.assertRaises(failures.MR05PhaseNotImplementedError):
             verifier.not_implemented()
+
+    def test_human_gate_runtime_is_schema_bound_and_side_effect_free(self):
+        self.assertEqual(contracts.SCHEMA_VERSIONS['mr05.human_gate'], '1.0.0')
+        self.assertEqual(contracts.SCHEMA_VERSIONS['mr05.human_decision'], '1.0.0')
+        self.assertEqual(human_gate.HUMAN_GATE_IMPLEMENTATION_COUNT, 1)
+        zero_names = (
+            'AUTO_EXECUTE_AFTER_APPROVAL_COUNT',
+            'HUMAN_APPROVAL_EXECUTION_COUNT',
+            'HUMAN_DECISION_SIDE_EFFECT_COUNT',
+            'STATE_TRANSITION_EXECUTION_COUNT',
+            'FILESYSTEM_WRITE_IMPLEMENTATION_COUNT',
+            'SUBPROCESS_EXECUTION_COUNT',
+            'NETWORK_IMPLEMENTATION_COUNT',
+            'PROVIDER_CLIENT_IMPLEMENTATION_COUNT',
+            'MODEL_CALL_IMPLEMENTATION_COUNT',
+            'MODEL_ROUTING_IMPLEMENTATION_COUNT',
+            'AUTH_IMPLEMENTATION_COUNT',
+            'AUTO_RETRY_IMPLEMENTATION_COUNT',
+            'AUTO_FALLBACK_IMPLEMENTATION_COUNT',
+            'GIT_OPERATION_COUNT',
+        )
+        for name in zero_names:
+            with self.subTest(counter=name):
+                self.assertEqual(getattr(human_gate, name), 0)
+        with self.assertRaises(failures.MR05PhaseNotImplementedError):
+            human_gate.not_implemented()
+
+    def test_human_gate_boundary_has_no_external_execution_surface(self):
+        source = inspect.getsource(human_gate)
+        for forbidden in (
+            'import socket', 'import subprocess', 'import requests', 'import httpx',
+            'import urllib', 'import openai', 'import anthropic', 'import boto3',
+            'subprocess.', 'socket.', 'requests.', 'httpx.', 'urllib.', 'open(',
+            'os.environ', 'os.getenv', 'pathlib.Path',
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
 
     def test_controller_fail_closed_override_bypasses_human_gate_requirement(self):
         result = controller.qualify_transition(controller.TRANSITION_FAIL_CLOSED)
