@@ -116,6 +116,31 @@ class BoundaryTests(unittest.TestCase):
                 ):
                     with self.subTest(path=path.name, required_zero=name):
                         self.assertIn(name, text)
+            elif path.name == 'proposal.py':
+                for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
+                    with self.subTest(path=path.name, token=token):
+                        self.assertNotIn(token, text)
+                self.assertIn('PROPOSAL_PARSE_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('PROPOSAL_IDENTITY_VALIDATION_IMPLEMENTATION_COUNT = 1', text)
+                for name in (
+                    'FILESYSTEM_SOURCE_READ_COUNT = 0',
+                    'FILESYSTEM_WRITE_IMPLEMENTATION_COUNT = 0',
+                    'SUBPROCESS_EXECUTION_COUNT = 0',
+                    'NETWORK_IMPLEMENTATION_COUNT = 0',
+                    'PROVIDER_CLIENT_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_CALL_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_ROUTING_IMPLEMENTATION_COUNT = 0',
+                    'AUTH_IMPLEMENTATION_COUNT = 0',
+                    'AUTO_RETRY_IMPLEMENTATION_COUNT = 0',
+                    'AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0',
+                    'LIVE_CLOUD_EXECUTION_COUNT = 0',
+                    'VERIFIER_DECISION_IMPLEMENTATION_COUNT = 0',
+                    'HUMAN_GATE_EXECUTION_COUNT = 0',
+                    'STATE_TRANSITION_EXECUTION_COUNT = 0',
+                    'GIT_OPERATION_COUNT = 0',
+                ):
+                    with self.subTest(path=path.name, required_zero=name):
+                        self.assertIn(name, text)
             elif path.name == 'disclosure.py':
                 for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
                     with self.subTest(path=path.name, token=token):
@@ -170,10 +195,12 @@ class BoundaryTests(unittest.TestCase):
             failures.phase_not_implemented('boundary-test')
 
     def test_implemented_module_legacy_boundary_still_fails_closed(self):
-        from hai_mr05 import canonical, metrics, provenance
+        from hai_mr05 import canonical, metrics, proposal, provenance
         with self.assertRaises(failures.MR05PhaseNotImplementedError):
             canonical.not_implemented()
         with self.assertRaises(failures.MR05PhaseNotImplementedError):
             metrics.not_implemented()
         with self.assertRaises(failures.MR05PhaseNotImplementedError):
             provenance.not_implemented()
+        with self.assertRaises(failures.MR05PhaseNotImplementedError):
+            proposal.not_implemented()
