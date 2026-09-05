@@ -1,10 +1,10 @@
 """Deterministic local admission of the frozen MR-05 cloud-context envelope.
 
 This module projects an already validated bounded context into the exact
-mr05.cloud_context / 1.0.0 semantic envelope.  It performs no source
-acquisition, dependency execution, request construction, provider/model work,
-authentication, evidence persistence, state transition, retry, fallback, or
-Git mutation.
+mr05.cloud_context / 1.0.0 semantic envelope and deterministically builds the
+mr05.cloud_request / 1.0.0 request envelope.  It performs no source
+acquisition, dependency execution, provider/model call, authentication,
+evidence persistence, state transition, retry, fallback, or Git mutation.
 """
 
 from __future__ import annotations
@@ -33,6 +33,13 @@ from .identity import require_sha256, sha256_canonical
 CLOUD_CONTEXT_SCHEMA_ID = "mr05.cloud_context"
 CLOUD_CONTEXT_SCHEMA_VERSION = SCHEMA_VERSION
 CLOUD_CONTEXT_BYTE_AUTHORITY = "CANONICAL_CLOUD_CONTEXT.complete_record_bytes"
+CLOUD_REQUEST_SCHEMA_ID = "mr05.cloud_request"
+CLOUD_REQUEST_SCHEMA_VERSION = SCHEMA_VERSION
+CLOUD_REQUEST_POLICY_VERSION = SCHEMA_VERSION
+CLOUD_REQUEST_REQUIRED_RESPONSE_SCHEMA = "mr05-cloud-proposal:1.0.0"
+CLOUD_REQUEST_REASONING_METADATA = MappingProxyType(
+    {"OPENCLAW_REASONING": "ON", "PROJECT_REASONING_PROFILE": "MAX"}
+)
 NO_REPACK_POLICY = "EXACT_BOUNDED_CONTEXT_PROJECTION_ONLY"
 PARTIAL_CONTEXT_TRUNCATION = "NOT_ALLOWED"
 
@@ -52,7 +59,7 @@ GIT_OPERATION_COUNT = 0
 SOURCE_ACQUISITION_IMPLEMENTATION_COUNT = 0
 DEPENDENCY_EXECUTION_IMPLEMENTATION_COUNT = 0
 EVIDENCE_PERSISTENCE_COUNT = 0
-CLOUD_REQUEST_BUILD_COUNT = 0
+CLOUD_REQUEST_BUILD_COUNT = 1
 LIVE_CLOUD_EXECUTION_COUNT = 0
 CONTEXT_REPACK_IMPLEMENTATION_COUNT = 0
 PARTIAL_CONTEXT_TRUNCATION_IMPLEMENTATION_COUNT = 0
@@ -93,6 +100,38 @@ CLOUD_CONTEXT_IDENTITY_PREIMAGE = (
     "prohibited_assumptions",
     "proposal_schema_version",
     "disclosure_result",
+)
+
+_CLOUD_REQUEST_REQUIRED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "run_identity",
+        "context_identity",
+        "request_identity",
+        "model_identifier",
+        "reasoning_metadata",
+        "attempt_number",
+        "max_attempts",
+        "required_response_schema",
+        "request_policy_version",
+        "human_authorization_reference",
+    }
+)
+_CLOUD_REQUEST_OPTIONAL_FIELDS = frozenset({"observational_metadata"})
+_CLOUD_REQUEST_REASONING_FIELDS = frozenset(
+    {"OPENCLAW_REASONING", "PROJECT_REASONING_PROFILE"}
+)
+
+CLOUD_REQUEST_IDENTITY_PREIMAGE = (
+    "schema_version",
+    "run_identity",
+    "context_identity",
+    "model_identifier",
+    "reasoning_metadata",
+    "attempt_number",
+    "max_attempts",
+    "required_response_schema",
+    "request_policy_version",
 )
 
 _SOURCE_REF_FIELDS = frozenset(
@@ -459,6 +498,34 @@ def _observational_metadata(value: object | None) -> Mapping[str, object] | None
     return _freeze(_plain(row))
 
 
+def _request_reasoning_metadata(value: object) -> dict[str, str]:
+    row = _mapping(value, "reasoning_metadata")
+    _exact_fields(row, _CLOUD_REQUEST_REASONING_FIELDS, "reasoning_metadata")
+    result = {
+        "OPENCLAW_REASONING": row["OPENCLAW_REASONING"],
+        "PROJECT_REASONING_PROFILE": row["PROJECT_REASONING_PROFILE"],
+    }
+    if result != dict(CLOUD_REQUEST_REASONING_METADATA):
+        _fail("reasoning_metadata does not match the frozen request profile")
+    return result
+
+
+def _human_authorization_reference(value: object) -> str:
+    if type(value) is not str or not 1 <= len(value) <= 2048:
+        _fail(
+            "human_authorization_reference is required for cloud request construction",
+            FailureCode.MR05_MODEL_UNAUTHORIZED,
+        )
+    try:
+        return _text(value, "human_authorization_reference", maximum=2048)
+    except CloudContextAdmissionValidationError:
+        _fail(
+            "human_authorization_reference is invalid",
+            FailureCode.MR05_MODEL_UNAUTHORIZED,
+        )
+    raise AssertionError("unreachable")
+
+
 def _project_package(
     package: BoundedContextPackage,
 ) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
@@ -654,6 +721,135 @@ class CloudContext:
 CloudContextAdmission = CloudContext
 
 
+@dataclass(frozen=True, slots=True)
+class CloudRequest:
+    """Exact mr05.cloud_request / 1.0.0 deterministic envelope."""
+
+    schema_version: str
+    run_identity: str
+    context_identity: str
+    request_identity: str
+    model_identifier: str
+    reasoning_metadata: Mapping[str, object]
+    attempt_number: int
+    max_attempts: int
+    required_response_schema: str
+    request_policy_version: str
+    human_authorization_reference: str
+    observational_metadata: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            validate_schema_version(CLOUD_REQUEST_SCHEMA_ID, self.schema_version)
+        except UnknownSchemaMajorVersionError as exc:
+            _fail(str(exc), FailureCode.MR05_UNKNOWN_SCHEMA_MAJOR)
+        except (UnsupportedSchemaVersionError, TypeError, ValueError) as exc:
+            _fail(str(exc))
+
+        run_identity = _sha(self.run_identity, "run_identity")
+        context_identity = _sha(self.context_identity, "context_identity")
+        model_identifier = _text(
+            self.model_identifier, "model_identifier", maximum=256
+        )
+        reasoning_metadata = _request_reasoning_metadata(self.reasoning_metadata)
+        attempt_number = _integer(self.attempt_number, "attempt_number", minimum=1)
+        max_attempts = _integer(self.max_attempts, "max_attempts", minimum=1)
+        if attempt_number != 1:
+            _fail("attempt_number must equal frozen value 1")
+        if max_attempts != 1:
+            _fail("max_attempts must equal frozen value 1")
+        if self.required_response_schema != CLOUD_REQUEST_REQUIRED_RESPONSE_SCHEMA:
+            _fail("required_response_schema is not frozen")
+        if self.request_policy_version != CLOUD_REQUEST_POLICY_VERSION:
+            _fail("request_policy_version is not frozen")
+        human_authorization_reference = _human_authorization_reference(
+            self.human_authorization_reference
+        )
+        observational_metadata = _observational_metadata(self.observational_metadata)
+
+        object.__setattr__(self, "schema_version", CLOUD_REQUEST_SCHEMA_VERSION)
+        object.__setattr__(self, "run_identity", run_identity)
+        object.__setattr__(self, "context_identity", context_identity)
+        object.__setattr__(self, "model_identifier", model_identifier)
+        object.__setattr__(self, "reasoning_metadata", _freeze(reasoning_metadata))
+        object.__setattr__(self, "attempt_number", 1)
+        object.__setattr__(self, "max_attempts", 1)
+        object.__setattr__(
+            self, "required_response_schema", CLOUD_REQUEST_REQUIRED_RESPONSE_SCHEMA
+        )
+        object.__setattr__(self, "request_policy_version", CLOUD_REQUEST_POLICY_VERSION)
+        object.__setattr__(
+            self, "human_authorization_reference", human_authorization_reference
+        )
+        object.__setattr__(self, "observational_metadata", observational_metadata)
+
+        declared_identity = _sha(self.request_identity, "request_identity")
+        try:
+            computed_identity = sha256_canonical(self.identity_payload)
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            _fail(str(exc))
+        if declared_identity != computed_identity:
+            _fail(
+                "request_identity does not match frozen cloud-request semantics",
+                FailureCode.HASH_MISMATCH,
+            )
+        object.__setattr__(self, "request_identity", declared_identity)
+
+    @property
+    def identity_payload(self) -> dict[str, object]:
+        """Return the exact frozen CLOUD_REQUEST_IDENTITY_SHA256 preimage."""
+
+        return {
+            "schema_version": self.schema_version,
+            "run_identity": self.run_identity,
+            "context_identity": self.context_identity,
+            "model_identifier": self.model_identifier,
+            "reasoning_metadata": _plain(self.reasoning_metadata),
+            "attempt_number": self.attempt_number,
+            "max_attempts": self.max_attempts,
+            "required_response_schema": self.required_response_schema,
+            "request_policy_version": self.request_policy_version,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        out = dict(self.identity_payload)
+        out["request_identity"] = self.request_identity
+        out["human_authorization_reference"] = self.human_authorization_reference
+        if self.observational_metadata is not None:
+            out["observational_metadata"] = _plain(self.observational_metadata)
+        return out
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict(), identity_critical=False)
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "CloudRequest":
+        row = _mapping(value, "cloud request")
+        _exact_fields(
+            row,
+            _CLOUD_REQUEST_REQUIRED_FIELDS,
+            "cloud request",
+            _CLOUD_REQUEST_OPTIONAL_FIELDS,
+        )
+        return cls(
+            schema_version=row["schema_version"],
+            run_identity=row["run_identity"],
+            context_identity=row["context_identity"],
+            request_identity=row["request_identity"],
+            model_identifier=row["model_identifier"],
+            reasoning_metadata=row["reasoning_metadata"],
+            attempt_number=row["attempt_number"],
+            max_attempts=row["max_attempts"],
+            required_response_schema=row["required_response_schema"],
+            request_policy_version=row["request_policy_version"],
+            human_authorization_reference=row["human_authorization_reference"],
+            observational_metadata=row.get("observational_metadata"),
+        )
+
+
+CloudRequestValidationError = CloudContextAdmissionValidationError
+
+
 def admit_cloud_context(
     bounded_context: BoundedContextPackage | Mapping[str, object],
     disclosure_record: DisclosureRecord | Mapping[str, object],
@@ -745,6 +941,59 @@ def canonical_cloud_context_bytes(value: CloudContext | Mapping[str, object]) ->
     return record.canonical_bytes()
 
 
+def build_cloud_request(
+    cloud_context: CloudContext | Mapping[str, object],
+    *,
+    model_identifier: object,
+    human_authorization_reference: object,
+    observational_metadata: Mapping[str, object] | None = None,
+) -> CloudRequest:
+    """Build one deterministic request envelope without executing a provider call."""
+
+    context = (
+        cloud_context
+        if isinstance(cloud_context, CloudContext)
+        else CloudContext.from_mapping(cloud_context)
+    )
+    model = _text(model_identifier, "model_identifier", maximum=256)
+    authorization = _human_authorization_reference(human_authorization_reference)
+    semantic = {
+        "schema_version": CLOUD_REQUEST_SCHEMA_VERSION,
+        "run_identity": context.run_identity,
+        "context_identity": context.context_identity,
+        "model_identifier": model,
+        "reasoning_metadata": dict(CLOUD_REQUEST_REASONING_METADATA),
+        "attempt_number": 1,
+        "max_attempts": 1,
+        "required_response_schema": CLOUD_REQUEST_REQUIRED_RESPONSE_SCHEMA,
+        "request_policy_version": CLOUD_REQUEST_POLICY_VERSION,
+    }
+    try:
+        request_identity = sha256_canonical(semantic)
+    except (CanonicalizationError, TypeError, ValueError) as exc:
+        _fail(str(exc))
+    return CloudRequest(
+        **semantic,
+        request_identity=request_identity,
+        human_authorization_reference=authorization,
+        observational_metadata=observational_metadata,
+    )
+
+
+def compute_cloud_request_identity(value: CloudRequest | Mapping[str, object]) -> str:
+    """Recompute the frozen request_identity after exact validation."""
+
+    record = value if isinstance(value, CloudRequest) else CloudRequest.from_mapping(value)
+    return sha256_canonical(record.identity_payload)
+
+
+def canonical_cloud_request_bytes(value: CloudRequest | Mapping[str, object]) -> bytes:
+    """Return complete canonical cloud-request bytes after exact validation."""
+
+    record = value if isinstance(value, CloudRequest) else CloudRequest.from_mapping(value)
+    return record.canonical_bytes()
+
+
 def not_implemented(*args: object, **kwargs: object) -> None:
     """Retain the legacy non-operational marker for direct callers."""
 
@@ -756,6 +1005,11 @@ __all__ = (
     "CLOUD_CONTEXT_SCHEMA_ID",
     "CLOUD_CONTEXT_SCHEMA_VERSION",
     "CLOUD_CONTEXT_BYTE_AUTHORITY",
+    "CLOUD_REQUEST_SCHEMA_ID",
+    "CLOUD_REQUEST_SCHEMA_VERSION",
+    "CLOUD_REQUEST_POLICY_VERSION",
+    "CLOUD_REQUEST_REQUIRED_RESPONSE_SCHEMA",
+    "CLOUD_REQUEST_REASONING_METADATA",
     "NO_REPACK_POLICY",
     "PARTIAL_CONTEXT_TRUNCATION",
     "CLOUD_CONTEXT_ADMISSION_IMPLEMENTATION_COUNT",
@@ -779,13 +1033,19 @@ __all__ = (
     "CONTEXT_REPACK_IMPLEMENTATION_COUNT",
     "PARTIAL_CONTEXT_TRUNCATION_IMPLEMENTATION_COUNT",
     "CLOUD_CONTEXT_IDENTITY_PREIMAGE",
+    "CLOUD_REQUEST_IDENTITY_PREIMAGE",
     "CloudContextAdmissionValidationError",
     "CloudContextValidationError",
     "CloudContext",
     "CloudContextAdmission",
+    "CloudRequestValidationError",
+    "CloudRequest",
     "admit_cloud_context",
     "build_cloud_context",
     "compute_cloud_context_identity",
     "canonical_cloud_context_bytes",
+    "build_cloud_request",
+    "compute_cloud_request_identity",
+    "canonical_cloud_request_bytes",
     "not_implemented",
 )

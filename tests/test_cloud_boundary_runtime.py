@@ -560,7 +560,7 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             ):
                 cloud_boundary.admit_cloud_context(package, allowed, **kwargs)
 
-    def test_admission_does_not_repack_truncate_or_build_request(self):
+    def test_admission_does_not_repack_or_truncate_context(self):
         package = self._context_package()
         record = self._admit(package)
         self.assertEqual(
@@ -577,10 +577,181 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             cloud_boundary.PARTIAL_CONTEXT_TRUNCATION_IMPLEMENTATION_COUNT,
             0,
         )
-        self.assertEqual(cloud_boundary.CLOUD_REQUEST_BUILD_COUNT, 0)
+        self.assertEqual(cloud_boundary.CLOUD_REQUEST_BUILD_COUNT, 1)
+
+    def test_cloud_request_emits_exact_frozen_schema_and_identity(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="openai/gpt-5.6-luna",
+            human_authorization_reference="human://mr14c/r1",
+        )
+        self.assertEqual(
+            set(request.to_dict()),
+            {
+                "schema_version", "run_identity", "context_identity",
+                "request_identity", "model_identifier", "reasoning_metadata",
+                "attempt_number", "max_attempts", "required_response_schema",
+                "request_policy_version", "human_authorization_reference",
+            },
+        )
+        self.assertEqual(request.schema_version, "1.0.0")
+        self.assertEqual(request.run_identity, context.run_identity)
+        self.assertEqual(request.context_identity, context.context_identity)
+        self.assertEqual(request.attempt_number, 1)
+        self.assertEqual(request.max_attempts, 1)
+        self.assertEqual(request.required_response_schema, "mr05-cloud-proposal:1.0.0")
+        self.assertEqual(request.request_policy_version, "1.0.0")
+        self.assertEqual(
+            dict(request.reasoning_metadata),
+            {"OPENCLAW_REASONING": "ON", "PROJECT_REASONING_PROFILE": "MAX"},
+        )
+        self.assertEqual(
+            tuple(request.identity_payload),
+            cloud_boundary.CLOUD_REQUEST_IDENTITY_PREIMAGE,
+        )
+        self.assertEqual(
+            request.request_identity, identity.sha256_canonical(request.identity_payload)
+        )
+        self.assertEqual(
+            cloud_boundary.compute_cloud_request_identity(request),
+            request.request_identity,
+        )
+
+    def test_human_authorization_and_observational_metadata_are_excluded_from_request_identity(self):
+        context = self._admit(self._context_package())
+        first = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="openai/gpt-5.6-luna",
+            human_authorization_reference="human://one",
+            observational_metadata={"transport_note": "one"},
+        )
+        second = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="openai/gpt-5.6-luna",
+            human_authorization_reference="human://two",
+            observational_metadata={"transport_note": "two"},
+        )
+        self.assertEqual(first.request_identity, second.request_identity)
+        self.assertNotEqual(first.canonical_bytes(), second.canonical_bytes())
+        self.assertNotIn("human_authorization_reference", first.identity_payload)
+        self.assertNotIn("observational_metadata", first.identity_payload)
+
+    def test_model_identifier_is_identity_bound(self):
+        context = self._admit(self._context_package())
+        first = cloud_boundary.build_cloud_request(
+            context, model_identifier="model-a",
+            human_authorization_reference="human://mr14c/r1",
+        )
+        second = cloud_boundary.build_cloud_request(
+            context, model_identifier="model-b",
+            human_authorization_reference="human://mr14c/r1",
+        )
+        self.assertNotEqual(first.request_identity, second.request_identity)
+        self.assertEqual(first.run_identity, second.run_identity)
+        self.assertEqual(first.context_identity, second.context_identity)
+
+    def test_cloud_request_requires_explicit_human_authorization_reference(self):
+        context = self._admit(self._context_package())
+        for value in ("", None, True):
+            with self.subTest(value=value), self.assertRaises(
+                cloud_boundary.CloudRequestValidationError
+            ) as caught:
+                cloud_boundary.build_cloud_request(
+                    context, model_identifier="model-a",
+                    human_authorization_reference=value,
+                )
+            self.assertEqual(
+                caught.exception.failure_code,
+                failures.FailureCode.MR05_MODEL_UNAUTHORIZED.value,
+            )
+
+    def test_cloud_request_frozen_attempt_reasoning_and_response_policy_fail_closed(self):
+        context = self._admit(self._context_package())
+        base = cloud_boundary.build_cloud_request(
+            context, model_identifier="model-a",
+            human_authorization_reference="human://mr14c/r1",
+        ).to_dict()
+        mutations = []
+        for field, value in (
+            ("attempt_number", 2),
+            ("max_attempts", 2),
+            ("required_response_schema", "other:1.0.0"),
+            ("request_policy_version", "9.9.9"),
+        ):
+            candidate = copy.deepcopy(base)
+            candidate[field] = value
+            candidate["request_identity"] = identity.sha256_canonical(
+                {key: candidate[key] for key in cloud_boundary.CLOUD_REQUEST_IDENTITY_PREIMAGE}
+            )
+            mutations.append(candidate)
+        bad_reasoning = copy.deepcopy(base)
+        bad_reasoning["reasoning_metadata"]["PROJECT_REASONING_PROFILE"] = "MEDIUM"
+        bad_reasoning["request_identity"] = identity.sha256_canonical(
+            {key: bad_reasoning[key] for key in cloud_boundary.CLOUD_REQUEST_IDENTITY_PREIMAGE}
+        )
+        mutations.append(bad_reasoning)
+        for candidate in mutations:
+            with self.subTest(candidate=candidate), self.assertRaises(
+                cloud_boundary.CloudRequestValidationError
+            ):
+                cloud_boundary.CloudRequest.from_mapping(candidate)
+
+    def test_cloud_request_schema_unknown_fields_unknown_major_and_forgery_fail_closed(self):
+        context = self._admit(self._context_package())
+        base = cloud_boundary.build_cloud_request(
+            context, model_identifier="model-a",
+            human_authorization_reference="human://mr14c/r1",
+        ).to_dict()
+        unknown = copy.deepcopy(base)
+        unknown["provider_request_id"] = "forbidden"
+        with self.assertRaises(cloud_boundary.CloudRequestValidationError):
+            cloud_boundary.CloudRequest.from_mapping(unknown)
+        missing = copy.deepcopy(base)
+        del missing["human_authorization_reference"]
+        with self.assertRaises(cloud_boundary.CloudRequestValidationError):
+            cloud_boundary.CloudRequest.from_mapping(missing)
+        major = copy.deepcopy(base)
+        major["schema_version"] = "2.0.0"
+        with self.assertRaises(cloud_boundary.CloudRequestValidationError) as major_caught:
+            cloud_boundary.CloudRequest.from_mapping(major)
+        self.assertEqual(
+            major_caught.exception.failure_code,
+            failures.FailureCode.MR05_UNKNOWN_SCHEMA_MAJOR.value,
+        )
+        forged = copy.deepcopy(base)
+        forged["request_identity"] = "0" * 64
+        with self.assertRaises(cloud_boundary.CloudRequestValidationError) as forged_caught:
+            cloud_boundary.CloudRequest.from_mapping(forged)
+        self.assertEqual(
+            forged_caught.exception.failure_code,
+            failures.FailureCode.HASH_MISMATCH.value,
+        )
+
+    def test_request_builder_has_no_live_execution_or_retry_authority(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context, model_identifier="model-a",
+            human_authorization_reference="human://mr14c/r1",
+        )
+        self.assertIsInstance(request, cloud_boundary.CloudRequest)
+        self.assertEqual(cloud_boundary.CLOUD_REQUEST_BUILD_COUNT, 1)
+        for name in (
+            "NETWORK_IMPLEMENTATION_COUNT",
+            "PROVIDER_CLIENT_IMPLEMENTATION_COUNT",
+            "MODEL_CALL_IMPLEMENTATION_COUNT",
+            "MODEL_ROUTING_IMPLEMENTATION_COUNT",
+            "AUTH_IMPLEMENTATION_COUNT",
+            "AUTO_RETRY_IMPLEMENTATION_COUNT",
+            "AUTO_FALLBACK_IMPLEMENTATION_COUNT",
+            "LIVE_CLOUD_EXECUTION_COUNT",
+        ):
+            with self.subTest(counter=name):
+                self.assertEqual(getattr(cloud_boundary, name), 0)
 
     def test_runtime_has_zero_external_and_progression_authority(self):
         self.assertEqual(cloud_boundary.CLOUD_CONTEXT_ADMISSION_IMPLEMENTATION_COUNT, 1)
+        self.assertEqual(cloud_boundary.CLOUD_REQUEST_BUILD_COUNT, 1)
         for name in (
             "FILESYSTEM_SOURCE_READ_COUNT",
             "FILESYSTEM_WRITE_IMPLEMENTATION_COUNT",
@@ -597,7 +768,6 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             "SOURCE_ACQUISITION_IMPLEMENTATION_COUNT",
             "DEPENDENCY_EXECUTION_IMPLEMENTATION_COUNT",
             "EVIDENCE_PERSISTENCE_COUNT",
-            "CLOUD_REQUEST_BUILD_COUNT",
             "LIVE_CLOUD_EXECUTION_COUNT",
             "CONTEXT_REPACK_IMPLEMENTATION_COUNT",
             "PARTIAL_CONTEXT_TRUNCATION_IMPLEMENTATION_COUNT",

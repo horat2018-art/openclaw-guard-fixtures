@@ -109,7 +109,7 @@ class BoundaryTests(unittest.TestCase):
                     'SOURCE_ACQUISITION_IMPLEMENTATION_COUNT = 0',
                     'DEPENDENCY_EXECUTION_IMPLEMENTATION_COUNT = 0',
                     'EVIDENCE_PERSISTENCE_COUNT = 0',
-                    'CLOUD_REQUEST_BUILD_COUNT = 0',
+                    'CLOUD_REQUEST_BUILD_COUNT = 1',
                     'LIVE_CLOUD_EXECUTION_COUNT = 0',
                     'CONTEXT_REPACK_IMPLEMENTATION_COUNT = 0',
                     'PARTIAL_CONTEXT_TRUNCATION_IMPLEMENTATION_COUNT = 0',
