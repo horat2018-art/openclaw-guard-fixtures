@@ -1,5 +1,6 @@
 import copy
 import unittest
+from dataclasses import replace
 
 from hai_mr05 import canonical, human_gate, identity
 
@@ -226,6 +227,186 @@ class HumanGateRuntimeTests(unittest.TestCase):
         for name in zero_names:
             with self.subTest(name=name):
                 self.assertEqual(getattr(human_gate, name), 0)
+
+
+    def test_explicit_null_observational_metadata_is_rejected(self):
+        gate = human_gate.build_human_gate(**self.gate_fields())
+        gate_mapping = gate.to_dict()
+        gate_mapping["observational_metadata"] = None
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.HumanGateRecord.from_mapping(gate_mapping)
+
+        gate_fields = self.gate_fields()
+        gate_fields["observational_metadata"] = None
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.build_human_gate(**gate_fields)
+
+        decision = human_gate.build_human_decision(
+            human_gate=gate, **self.decision_fields()
+        )
+        decision_mapping = decision.to_dict()
+        decision_mapping["observational_metadata"] = None
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.HumanDecisionRecord.from_mapping(
+                decision_mapping, human_gate=gate
+            )
+
+        decision_fields = self.decision_fields()
+        decision_fields["observational_metadata"] = None
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.build_human_decision(
+                human_gate=gate, **decision_fields
+            )
+
+    def test_schema_permitted_line_breaks_are_preserved(self):
+        fields = self.gate_fields()
+        fields["task_summary"] = "review\ntask"
+        fields["proposal_summary"] = "review\rproposal"
+        fields["reason_codes"] = ["VERIFIED\nDETAIL"]
+        fields["uncertainties"] = ["line\nbreak", "carriage\rreturn"]
+        fields["source_refs"][0]["canonical_locator"] = "fixture/line\nbreak.json"
+        fields["evidence_pointers"] = ["evidence/manifest\r.json"]
+        gate = human_gate.build_human_gate(**fields)
+        self.assertEqual(gate.task_summary, "review\ntask")
+        self.assertEqual(gate.proposal_summary, "review\rproposal")
+        self.assertEqual(gate.reason_codes, ("VERIFIED\nDETAIL",))
+        self.assertEqual(gate.uncertainties, ("line\nbreak", "carriage\rreturn"))
+        self.assertEqual(
+            gate.source_refs[0]["canonical_locator"],
+            "fixture/line\nbreak.json",
+        )
+        self.assertEqual(gate.evidence_pointers, ("evidence/manifest\r.json",))
+
+        decision_fields = self.decision_fields()
+        decision_fields["decision_reason"] = "Reviewed\nsupplied evidence"
+        decision_fields["decision_scope"] = "This exact\rHuman Gate record only"
+        decision_fields["human_authority_reference"] = "human-auth:\nfixture-001"
+        decision = human_gate.build_human_decision(
+            human_gate=gate, **decision_fields
+        )
+        self.assertEqual(decision.decision_reason, "Reviewed\nsupplied evidence")
+        self.assertEqual(decision.decision_scope, "This exact\rHuman Gate record only")
+        self.assertEqual(
+            decision.human_authority_reference,
+            "human-auth:\nfixture-001",
+        )
+
+    def test_nul_and_unpaired_surrogates_remain_rejected(self):
+        for field, value in (
+            ("task_summary", "bad\x00text"),
+            ("proposal_summary", "bad\ud800text"),
+        ):
+            fields = self.gate_fields()
+            fields[field] = value
+            with self.subTest(field=field), self.assertRaises(
+                human_gate.HumanGateValidationError
+            ):
+                human_gate.build_human_gate(**fields)
+
+        fields = self.gate_fields()
+        fields["uncertainties"] = ["bad\ud800text"]
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.build_human_gate(**fields)
+
+        fields = self.gate_fields()
+        fields["source_refs"][0]["canonical_locator"] = "bad\x00locator"
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.build_human_gate(**fields)
+
+        gate = human_gate.build_human_gate(**self.gate_fields())
+        for field, value in (
+            ("decision_reason", "bad\x00reason"),
+            ("decision_scope", "bad\ud800scope"),
+            ("human_authority_reference", "bad\x00authority"),
+        ):
+            decision_fields = self.decision_fields()
+            decision_fields[field] = value
+            with self.subTest(field=field), self.assertRaises(
+                human_gate.HumanGateValidationError
+            ):
+                human_gate.build_human_decision(
+                    human_gate=gate, **decision_fields
+                )
+
+    def test_evidence_pointer_frozen_path_restrictions_are_preserved(self):
+        for pointer in (
+            "evidence/line\nbreak.json",
+            "../escape.json",
+            "evidence/../escape.json",
+            "/absolute/path.json",
+        ):
+            fields = self.gate_fields()
+            fields["evidence_pointers"] = [pointer]
+            with self.subTest(pointer=pointer), self.assertRaises(
+                human_gate.HumanGateValidationError
+            ):
+                human_gate.build_human_gate(**fields)
+
+    def test_observational_float_canonicalizes_without_changing_identity(self):
+        base_gate = human_gate.build_human_gate(**self.gate_fields())
+        gate_fields = self.gate_fields()
+        gate_fields["observational_metadata"] = {"score": 1.25}
+        gate = human_gate.build_human_gate(**gate_fields)
+        self.assertEqual(base_gate.human_gate_identity, gate.human_gate_identity)
+        self.assertIn(b'"score":1.25', human_gate.canonical_human_gate_bytes(gate))
+
+        base_decision = human_gate.build_human_decision(
+            human_gate=gate, **self.decision_fields()
+        )
+        decision_fields = self.decision_fields()
+        decision_fields["observational_metadata"] = {"score": 2.5}
+        decision = human_gate.build_human_decision(
+            human_gate=gate, **decision_fields
+        )
+        self.assertEqual(base_decision.decision_identity, decision.decision_identity)
+        self.assertIn(
+            b'"score":2.5',
+            human_gate.canonical_human_decision_bytes(decision),
+        )
+
+    def test_full_record_canonicalization_requalifies_identity_fields(self):
+        gate = human_gate.build_human_gate(**self.gate_fields())
+        bad_refs = [dict(row) for row in gate.source_refs]
+        bad_refs[0]["content_size_bytes"] = 1.25
+        tampered_gate = replace(gate, source_refs=tuple(bad_refs))
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.canonical_human_gate_bytes(tampered_gate)
+
+        tampered_gate_identity = replace(gate, human_gate_identity="a" * 64)
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.canonical_human_gate_bytes(tampered_gate_identity)
+
+        gate_fields = self.gate_fields()
+        gate_fields["observational_metadata"] = {"score": 1.25}
+        qualified_gate = human_gate.build_human_gate(**gate_fields)
+        self.assertIn(
+            b'"score":1.25',
+            human_gate.canonical_human_gate_bytes(qualified_gate),
+        )
+
+        decision = human_gate.build_human_decision(
+            human_gate=qualified_gate, **self.decision_fields()
+        )
+        tampered_decision_type = replace(decision, decision_reason=1.25)
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.canonical_human_decision_bytes(tampered_decision_type)
+
+        tampered_decision_identity = replace(
+            decision, decision_identity="b" * 64
+        )
+        with self.assertRaises(human_gate.HumanGateValidationError):
+            human_gate.canonical_human_decision_bytes(tampered_decision_identity)
+
+        decision_fields = self.decision_fields()
+        decision_fields["observational_metadata"] = {"score": 2.5}
+        qualified_decision = human_gate.build_human_decision(
+            human_gate=qualified_gate, **decision_fields
+        )
+        self.assertIn(
+            b'"score":2.5',
+            human_gate.canonical_human_decision_bytes(qualified_decision),
+        )
+
 
 
 if __name__ == "__main__":

@@ -119,10 +119,9 @@ def _exact_fields(value: Mapping[str, object], required: set[str], optional: set
 def _text(value: object, field: str, *, minimum: int = 1, maximum: int) -> str:
     if type(value) is not str or not minimum <= len(value) <= maximum:
         _fail(f"{field} length is invalid")
-    if "\x00" in value or "\n" in value or "\r" in value:
-        _fail(f"{field} contains an unsafe character")
+    if "\x00" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        _fail(f"{field} contains an unsafe Unicode scalar")
     return value
-
 
 def _sha(value: object, field: str) -> str:
     try:
@@ -175,7 +174,7 @@ def _evidence_pointers(value: object) -> tuple[str, ...]:
     out: list[str] = []
     for item in _sequence(value, "evidence_pointers"):
         pointer = _text(item, "evidence_pointer", maximum=2048)
-        if pointer.startswith("/") or any(part == ".." for part in pointer.split("/")):
+        if "\n" in pointer or pointer.startswith("/") or any(part == ".." for part in pointer.split("/")):
             _fail("evidence_pointer is not a safe relative path")
         out.append(pointer)
     return tuple(sorted(out))
@@ -210,9 +209,9 @@ def _plain(value: object) -> object:
     return value
 
 
-def _observational_metadata(value: object) -> Mapping[str, object] | None:
+def _observational_metadata(value: object) -> Mapping[str, object]:
     if value is None:
-        return None
+        _fail("observational_metadata must be an object when present")
     row = _mapping(value, "observational_metadata")
     return MappingProxyType(dict(row))
 
@@ -304,7 +303,11 @@ class HumanGateRecord:
                 row["human_action_options"], verification_result
             ),
             human_gate_identity=_sha(row["human_gate_identity"], "human_gate_identity"),
-            observational_metadata=_observational_metadata(row.get("observational_metadata")),
+            observational_metadata=(
+                _observational_metadata(row["observational_metadata"])
+                if "observational_metadata" in row
+                else None
+            ),
         )
         expected = sha256_canonical(record.identity_payload)
         if record.human_gate_identity != expected:
@@ -395,7 +398,11 @@ class HumanDecisionRecord:
             decision_scope=_text(row["decision_scope"], "decision_scope", maximum=2048),
             human_authority_reference=_text(row["human_authority_reference"], "human_authority_reference", maximum=2048),
             decision_identity=_sha(row["decision_identity"], "decision_identity"),
-            observational_metadata=_observational_metadata(row.get("observational_metadata")),
+            observational_metadata=(
+                _observational_metadata(row["observational_metadata"])
+                if "observational_metadata" in row
+                else None
+            ),
         )
         expected = sha256_canonical(record.identity_payload)
         if record.decision_identity != expected:
@@ -476,7 +483,12 @@ def build_human_decision(
         {"observational_metadata"},
         "human_decision_builder",
     )
-    payload["human_gate_identity"] = gate.human_gate_identity
+    try:
+        validate_schema_version(HUMAN_DECISION_SCHEMA_ID, payload["schema_version"])
+    except UnknownSchemaMajorVersionError as exc:
+        _fail(str(exc), FailureCode.MR05_UNKNOWN_SCHEMA_MAJOR)
+    except (UnsupportedSchemaVersionError, TypeError, ValueError) as exc:
+        _fail(str(exc), FailureCode.INVALID_SCHEMA)
     decision = payload["decision"]
     if type(decision) is not str or decision not in HUMAN_ACTION_VALUES:
         _fail("unknown human decision", FailureCode.MR05_HUMAN_GATE_INVALID)
@@ -485,22 +497,84 @@ def build_human_decision(
             "human decision is not legal for the Human Gate verification result",
             FailureCode.MR05_HUMAN_GATE_INVALID,
         )
-    payload["decision_identity"] = sha256_canonical({
-        key: payload[key] for key in HUMAN_DECISION_IDENTITY_PREIMAGE
-    })
-    return HumanDecisionRecord.from_mapping(payload, human_gate=gate)
+    identity_payload: dict[str, object] = {
+        "schema_version": HUMAN_DECISION_SCHEMA_VERSION,
+        "human_gate_identity": gate.human_gate_identity,
+        "decision": decision,
+        "decision_reason": _text(
+            payload["decision_reason"], "decision_reason", maximum=8192
+        ),
+        "decision_scope": _text(
+            payload["decision_scope"], "decision_scope", maximum=2048
+        ),
+        "human_authority_reference": _text(
+            payload["human_authority_reference"],
+            "human_authority_reference",
+            maximum=2048,
+        ),
+    }
+    record_payload = dict(identity_payload)
+    record_payload["decision_identity"] = sha256_canonical(identity_payload)
+    if "observational_metadata" in payload:
+        record_payload["observational_metadata"] = payload["observational_metadata"]
+    return HumanDecisionRecord.from_mapping(record_payload, human_gate=gate)
+
+
+def _qualified_human_decision_record(value: object) -> HumanDecisionRecord:
+    if not isinstance(value, HumanDecisionRecord):
+        _fail(
+            "an exact qualified HumanDecisionRecord is required",
+            FailureCode.MR05_HUMAN_GATE_INVALID,
+        )
+    row = _mapping(value.to_dict(), "human_decision")
+    required = set(HUMAN_DECISION_IDENTITY_PREIMAGE) | {"decision_identity"}
+    _exact_fields(row, required, {"observational_metadata"}, "human_decision")
+    try:
+        validate_schema_version(HUMAN_DECISION_SCHEMA_ID, row["schema_version"])
+    except UnknownSchemaMajorVersionError as exc:
+        _fail(str(exc), FailureCode.MR05_UNKNOWN_SCHEMA_MAJOR)
+    except (UnsupportedSchemaVersionError, TypeError, ValueError) as exc:
+        _fail(str(exc), FailureCode.INVALID_SCHEMA)
+    decision = row["decision"]
+    if type(decision) is not str or decision not in HUMAN_ACTION_VALUES:
+        _fail("unknown human decision", FailureCode.MR05_HUMAN_GATE_INVALID)
+    record = HumanDecisionRecord(
+        schema_version=HUMAN_DECISION_SCHEMA_VERSION,
+        human_gate_identity=_sha(row["human_gate_identity"], "human_gate_identity"),
+        decision=decision,
+        decision_reason=_text(row["decision_reason"], "decision_reason", maximum=8192),
+        decision_scope=_text(row["decision_scope"], "decision_scope", maximum=2048),
+        human_authority_reference=_text(
+            row["human_authority_reference"],
+            "human_authority_reference",
+            maximum=2048,
+        ),
+        decision_identity=_sha(row["decision_identity"], "decision_identity"),
+        observational_metadata=(
+            _observational_metadata(row["observational_metadata"])
+            if "observational_metadata" in row
+            else None
+        ),
+    )
+    expected = sha256_canonical(record.identity_payload)
+    if record.decision_identity != expected:
+        _fail("decision_identity mismatch", FailureCode.HASH_MISMATCH)
+    if record != value:
+        _fail(
+            "Human Decision record is not canonically qualified",
+            FailureCode.MR05_HUMAN_GATE_INVALID,
+        )
+    return record
 
 
 def canonical_human_gate_bytes(record: HumanGateRecord) -> bytes:
-    if not isinstance(record, HumanGateRecord):
-        _fail("record must be HumanGateRecord")
-    return canonical_json_bytes(record.to_dict())
+    qualified = _qualified_human_gate(record)
+    return canonical_json_bytes(qualified.to_dict(), identity_critical=False)
 
 
 def canonical_human_decision_bytes(record: HumanDecisionRecord) -> bytes:
-    if not isinstance(record, HumanDecisionRecord):
-        _fail("record must be HumanDecisionRecord")
-    return canonical_json_bytes(record.to_dict())
+    qualified = _qualified_human_decision_record(record)
+    return canonical_json_bytes(qualified.to_dict(), identity_critical=False)
 
 
 def not_implemented(*args: object, **kwargs: object) -> None:
