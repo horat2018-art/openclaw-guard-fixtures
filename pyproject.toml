@@ -1,7 +1,7 @@
 [project]
 name = "hai-mr05"
 version = "0.0.0"
-description = "HAI MR-05 deterministic integration skeleton"
+description = "HAI MR-05 qualified deterministic runtime with live external execution unavailable"
 requires-python = ">=3.12"
 dependencies = []
 
@@ -11,4 +11,21 @@ package = "hai_mr05"
 source_root = "src/hai_mr05/"
 test_root = "tests/"
 test_command = "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v"
-implementation = "DEFERRED"
+implementation = "HISTORICAL_FROZEN_BASELINE"
+
+[tool.hai_mr05.runtime]
+qualified_through = "HAI-MR-14G-R3A5"
+deterministic_runtime = "QUALIFIED_IMPLEMENTED"
+cli = "INTENTIONALLY_UNAVAILABLE"
+live_external_execution = "NOT_IMPLEMENTED"
+network_authority = false
+provider_client_authority = false
+model_call_authority = false
+model_routing_authority = false
+authentication_authority = false
+auto_retry_authority = false
+auto_fallback_authority = false
+human_approval_execution_authority = false
+human_decision_side_effect_authority = false
+state_transition_execution_authority = false
+openclaw_production_execution_authority = false
