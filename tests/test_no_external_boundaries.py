@@ -141,6 +141,35 @@ class BoundaryTests(unittest.TestCase):
                 ):
                     with self.subTest(path=path.name, required_zero=name):
                         self.assertIn(name, text)
+            elif path.name == 'verifier.py':
+                for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
+                    with self.subTest(path=path.name, token=token):
+                        self.assertNotIn(token, text)
+                self.assertIn('VERIFIER_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('VERIFICATION_RECORD_PARSE_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('VERIFICATION_IDENTITY_VALIDATION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('VERIFICATION_ADAPTER_VALIDATION_IMPLEMENTATION_COUNT = 1', text)
+                for name in (
+                    'LIVE_VERIFICATION_EXECUTION_COUNT = 0',
+                    'MR04_VERIFIER_EXECUTION_IMPLEMENTATION_COUNT = 0',
+                    'SOURCE_DISCOVERY_IMPLEMENTATION_COUNT = 0',
+                    'FILESYSTEM_SOURCE_READ_COUNT = 0',
+                    'FILESYSTEM_WRITE_IMPLEMENTATION_COUNT = 0',
+                    'SUBPROCESS_EXECUTION_COUNT = 0',
+                    'NETWORK_IMPLEMENTATION_COUNT = 0',
+                    'PROVIDER_CLIENT_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_CALL_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_ROUTING_IMPLEMENTATION_COUNT = 0',
+                    'AUTH_IMPLEMENTATION_COUNT = 0',
+                    'HUMAN_APPROVAL_EXECUTION_COUNT = 0',
+                    'HUMAN_DECISION_EXECUTION_COUNT = 0',
+                    'STATE_TRANSITION_EXECUTION_COUNT = 0',
+                    'AUTO_RETRY_IMPLEMENTATION_COUNT = 0',
+                    'AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0',
+                    'GIT_OPERATION_COUNT = 0',
+                ):
+                    with self.subTest(path=path.name, required_zero=name):
+                        self.assertIn(name, text)
             elif path.name == 'disclosure.py':
                 for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
                     with self.subTest(path=path.name, token=token):
