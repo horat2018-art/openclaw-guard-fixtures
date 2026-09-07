@@ -170,6 +170,31 @@ class BoundaryTests(unittest.TestCase):
                 ):
                     with self.subTest(path=path.name, required_zero=name):
                         self.assertIn(name, text)
+            elif path.name == 'workflow.py':
+                for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
+                    with self.subTest(path=path.name, token=token):
+                        self.assertNotIn(token, text)
+                self.assertIn('WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT = 1', text)
+                for name in (
+                    'WORKFLOW_EXECUTION_COUNT = 0',
+                    'LIVE_CLOUD_EXECUTION_COUNT = 0',
+                    'NETWORK_IMPLEMENTATION_COUNT = 0',
+                    'PROVIDER_CLIENT_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_CALL_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_ROUTING_IMPLEMENTATION_COUNT = 0',
+                    'AUTH_IMPLEMENTATION_COUNT = 0',
+                    'AUTO_RETRY_IMPLEMENTATION_COUNT = 0',
+                    'AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0',
+                    'HUMAN_APPROVAL_EXECUTION_COUNT = 0',
+                    'HUMAN_DECISION_SIDE_EFFECT_COUNT = 0',
+                    'STATE_TRANSITION_EXECUTION_COUNT = 0',
+                    'FILESYSTEM_SOURCE_READ_COUNT = 0',
+                    'FILESYSTEM_WRITE_IMPLEMENTATION_COUNT = 0',
+                    'SUBPROCESS_EXECUTION_COUNT = 0',
+                    'GIT_OPERATION_COUNT = 0',
+                ):
+                    with self.subTest(path=path.name, required_zero=name):
+                        self.assertIn(name, text)
             elif path.name == 'disclosure.py':
                 for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
                     with self.subTest(path=path.name, token=token):

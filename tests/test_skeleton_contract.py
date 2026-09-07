@@ -2,12 +2,12 @@ import importlib
 import inspect
 import unittest
 
-from hai_mr05 import canonical, context_builder, contracts, controller, discovery, failures, human_gate, identity, metrics, mr03_adapter, mr04_adapter, normalization, provenance, verifier
+from hai_mr05 import canonical, context_builder, contracts, controller, discovery, failures, human_gate, identity, metrics, mr03_adapter, mr04_adapter, normalization, provenance, verifier, workflow
 from hai_mr05.failures import Failure, FailureCode, FailureOwner, FailureSeverity, FailureState
 from hai_mr05.metrics import Metrics
 from hai_mr05.provenance import ProvenanceChain, ProvenanceEdge, ProvenanceNode, RelationType
 
-MODULE_NAMES = ('controller', 'contracts', 'canonical', 'identity', 'discovery', 'normalization', 'mr03_adapter', 'mr04_adapter', 'context_builder', 'disclosure', 'cloud_boundary', 'proposal', 'verifier', 'human_gate', 'provenance', 'metrics', 'failures', 'evidence', 'cli')
+MODULE_NAMES = ('controller', 'contracts', 'canonical', 'identity', 'discovery', 'normalization', 'mr03_adapter', 'mr04_adapter', 'context_builder', 'disclosure', 'cloud_boundary', 'proposal', 'verifier', 'human_gate', 'workflow', 'provenance', 'metrics', 'failures', 'evidence', 'cli')
 
 
 class SkeletonContractTests(unittest.TestCase):
@@ -30,7 +30,7 @@ class SkeletonContractTests(unittest.TestCase):
     def test_callable_placeholders_fail_closed(self):
         for name in MODULE_NAMES:
             module = importlib.import_module(f"hai_mr05.{name}")
-            if name in {'contracts', 'identity', 'failures', 'discovery', 'normalization', 'verifier', 'evidence', 'controller'}:
+            if name in {'contracts', 'identity', 'failures', 'discovery', 'normalization', 'verifier', 'evidence', 'controller', 'workflow'}:
                 continue
             if name == 'cli':
                 callable_placeholder = module.main
