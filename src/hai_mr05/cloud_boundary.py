@@ -27,7 +27,7 @@ from .contracts import (
 )
 from .disclosure import DisclosureRecord, DisclosureValidationError
 from .failures import FailureCode, phase_not_implemented
-from .identity import require_sha256, sha256_canonical
+from .identity import require_sha256, sha256_bytes, sha256_canonical
 
 
 CLOUD_CONTEXT_SCHEMA_ID = "mr05.cloud_context"
@@ -37,6 +37,12 @@ CLOUD_REQUEST_SCHEMA_ID = "mr05.cloud_request"
 CLOUD_REQUEST_SCHEMA_VERSION = SCHEMA_VERSION
 CLOUD_REQUEST_POLICY_VERSION = SCHEMA_VERSION
 CLOUD_REQUEST_REQUIRED_RESPONSE_SCHEMA = "mr05-cloud-proposal:1.0.0"
+CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_ID = "mr05.cloud_execution_authorization"
+CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_VERSION = SCHEMA_VERSION
+CLOUD_EXECUTION_AUTHORIZATION_POLICY_VERSION = SCHEMA_VERSION
+CLOUD_EXECUTION_RETRY_POLICY = "ZERO_BY_DEFAULT"
+CLOUD_RESPONSE_SCHEMA_ID = "mr05.cloud_response"
+CLOUD_RESPONSE_SCHEMA_VERSION = SCHEMA_VERSION
 CLOUD_REQUEST_REASONING_METADATA = MappingProxyType(
     {"OPENCLAW_REASONING": "ON", "PROJECT_REASONING_PROFILE": "MAX"}
 )
@@ -60,6 +66,9 @@ SOURCE_ACQUISITION_IMPLEMENTATION_COUNT = 0
 DEPENDENCY_EXECUTION_IMPLEMENTATION_COUNT = 0
 EVIDENCE_PERSISTENCE_COUNT = 0
 CLOUD_REQUEST_BUILD_COUNT = 1
+CLOUD_EXECUTION_AUTHORIZATION_BUILD_COUNT = 1
+CLOUD_RESPONSE_RECORD_BUILD_COUNT = 1
+CLOUD_RESPONSE_BINDING_VALIDATION_COUNT = 1
 LIVE_CLOUD_EXECUTION_COUNT = 0
 CONTEXT_REPACK_IMPLEMENTATION_COUNT = 0
 PARTIAL_CONTEXT_TRUNCATION_IMPLEMENTATION_COUNT = 0
@@ -132,6 +141,67 @@ CLOUD_REQUEST_IDENTITY_PREIMAGE = (
     "max_attempts",
     "required_response_schema",
     "request_policy_version",
+)
+
+_CLOUD_EXECUTION_AUTHORIZATION_REQUIRED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "authorization_policy_version",
+        "run_identity",
+        "context_identity",
+        "request_identity",
+        "model_identifier",
+        "provider_identifier",
+        "account_boundary_reference",
+        "authorized_request_count",
+        "authorized_attempt_count",
+        "retry_policy",
+        "fallback_allowed",
+        "model_switch_allowed",
+        "human_authorization_reference",
+        "authorization_identity",
+    }
+)
+_CLOUD_EXECUTION_AUTHORIZATION_OPTIONAL_FIELDS = frozenset({"observational_metadata"})
+CLOUD_EXECUTION_AUTHORIZATION_IDENTITY_PREIMAGE = (
+    "schema_version",
+    "authorization_policy_version",
+    "run_identity",
+    "context_identity",
+    "request_identity",
+    "model_identifier",
+    "provider_identifier",
+    "account_boundary_reference",
+    "authorized_request_count",
+    "authorized_attempt_count",
+    "retry_policy",
+    "fallback_allowed",
+    "model_switch_allowed",
+    "human_authorization_reference",
+)
+
+_CLOUD_RESPONSE_REQUIRED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "request_identity",
+        "attempt_number",
+        "raw_response_sha256",
+        "raw_response_size_bytes",
+        "response_identity",
+        "provider_identifier",
+        "actual_model_identifier",
+        "provider_request_id",
+        "account_boundary_reference",
+        "provider_usage_if_available",
+        "error_metadata",
+    }
+)
+CLOUD_RESPONSE_IDENTITY_PREIMAGE = (
+    "schema_version",
+    "request_identity",
+    "attempt_number",
+    "raw_response_sha256",
+    "raw_response_size_bytes",
 )
 
 _SOURCE_REF_FIELDS = frozenset(
@@ -498,6 +568,17 @@ def _observational_metadata(value: object | None) -> Mapping[str, object] | None
     return _freeze(_plain(row))
 
 
+def _transport_metadata(value: object | None, field: str) -> Mapping[str, object] | None:
+    if value is None:
+        return None
+    row = _mapping(value, field)
+    try:
+        canonical_json_bytes(row, identity_critical=False)
+    except CanonicalizationError as exc:
+        _fail(str(exc), FailureCode.MR05_MODEL_PROVIDER_ERROR)
+    return _freeze(_plain(row))
+
+
 def _request_reasoning_metadata(value: object) -> dict[str, str]:
     row = _mapping(value, "reasoning_metadata")
     _exact_fields(row, _CLOUD_REQUEST_REASONING_FIELDS, "reasoning_metadata")
@@ -850,6 +931,310 @@ class CloudRequest:
 CloudRequestValidationError = CloudContextAdmissionValidationError
 
 
+@dataclass(frozen=True, slots=True)
+class CloudExecutionAuthorization:
+    """Pure-data authorization binding for exactly one frozen cloud request."""
+
+    schema_version: str
+    authorization_policy_version: str
+    run_identity: str
+    context_identity: str
+    request_identity: str
+    model_identifier: str
+    provider_identifier: str
+    account_boundary_reference: str
+    authorized_request_count: int
+    authorized_attempt_count: int
+    retry_policy: str
+    fallback_allowed: bool
+    model_switch_allowed: bool
+    human_authorization_reference: str
+    authorization_identity: str
+    observational_metadata: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            validate_schema_version(
+                CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_ID, self.schema_version
+            )
+        except UnknownSchemaMajorVersionError as exc:
+            _fail(str(exc), FailureCode.MR05_UNKNOWN_SCHEMA_MAJOR)
+        except (UnsupportedSchemaVersionError, TypeError, ValueError) as exc:
+            _fail(str(exc))
+
+        run_identity = _sha(self.run_identity, "run_identity")
+        context_identity = _sha(self.context_identity, "context_identity")
+        request_identity = _sha(self.request_identity, "request_identity")
+        model_identifier = _text(self.model_identifier, "model_identifier", maximum=256)
+        provider_identifier = _text(
+            self.provider_identifier, "provider_identifier", maximum=256
+        )
+        account_boundary_reference = _text(
+            self.account_boundary_reference,
+            "account_boundary_reference",
+            maximum=2048,
+        )
+        authorized_request_count = _integer(
+            self.authorized_request_count, "authorized_request_count", minimum=1
+        )
+        authorized_attempt_count = _integer(
+            self.authorized_attempt_count, "authorized_attempt_count", minimum=1
+        )
+        fallback_allowed = _boolean(self.fallback_allowed, "fallback_allowed")
+        model_switch_allowed = _boolean(
+            self.model_switch_allowed, "model_switch_allowed"
+        )
+        human_authorization_reference = _human_authorization_reference(
+            self.human_authorization_reference
+        )
+        if self.authorization_policy_version != CLOUD_EXECUTION_AUTHORIZATION_POLICY_VERSION:
+            _fail(
+                "authorization_policy_version is not frozen",
+                FailureCode.MR05_MODEL_UNAUTHORIZED,
+            )
+        if authorized_request_count != 1:
+            _fail(
+                "authorized_request_count must equal frozen value 1",
+                FailureCode.MR05_MODEL_UNAUTHORIZED,
+            )
+        if authorized_attempt_count != 1:
+            _fail(
+                "authorized_attempt_count must equal frozen value 1",
+                FailureCode.MR05_MODEL_UNAUTHORIZED,
+            )
+        if self.retry_policy != CLOUD_EXECUTION_RETRY_POLICY:
+            _fail("retry_policy is not frozen", FailureCode.MR05_MODEL_UNAUTHORIZED)
+        if fallback_allowed is not False:
+            _fail("fallback_allowed must be false", FailureCode.MR05_MODEL_UNAUTHORIZED)
+        if model_switch_allowed is not False:
+            _fail("model_switch_allowed must be false", FailureCode.MR05_MODEL_UNAUTHORIZED)
+        observational_metadata = _observational_metadata(self.observational_metadata)
+
+        object.__setattr__(
+            self, "schema_version", CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_VERSION
+        )
+        object.__setattr__(
+            self,
+            "authorization_policy_version",
+            CLOUD_EXECUTION_AUTHORIZATION_POLICY_VERSION,
+        )
+        object.__setattr__(self, "run_identity", run_identity)
+        object.__setattr__(self, "context_identity", context_identity)
+        object.__setattr__(self, "request_identity", request_identity)
+        object.__setattr__(self, "model_identifier", model_identifier)
+        object.__setattr__(self, "provider_identifier", provider_identifier)
+        object.__setattr__(
+            self, "account_boundary_reference", account_boundary_reference
+        )
+        object.__setattr__(self, "authorized_request_count", 1)
+        object.__setattr__(self, "authorized_attempt_count", 1)
+        object.__setattr__(self, "retry_policy", CLOUD_EXECUTION_RETRY_POLICY)
+        object.__setattr__(self, "fallback_allowed", False)
+        object.__setattr__(self, "model_switch_allowed", False)
+        object.__setattr__(
+            self, "human_authorization_reference", human_authorization_reference
+        )
+        object.__setattr__(self, "observational_metadata", observational_metadata)
+
+        declared_identity = _sha(self.authorization_identity, "authorization_identity")
+        try:
+            computed_identity = sha256_canonical(self.identity_payload)
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            _fail(str(exc))
+        if declared_identity != computed_identity:
+            _fail(
+                "authorization_identity does not match frozen execution authorization semantics",
+                FailureCode.HASH_MISMATCH,
+            )
+        object.__setattr__(self, "authorization_identity", declared_identity)
+
+    @property
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "authorization_policy_version": self.authorization_policy_version,
+            "run_identity": self.run_identity,
+            "context_identity": self.context_identity,
+            "request_identity": self.request_identity,
+            "model_identifier": self.model_identifier,
+            "provider_identifier": self.provider_identifier,
+            "account_boundary_reference": self.account_boundary_reference,
+            "authorized_request_count": self.authorized_request_count,
+            "authorized_attempt_count": self.authorized_attempt_count,
+            "retry_policy": self.retry_policy,
+            "fallback_allowed": self.fallback_allowed,
+            "model_switch_allowed": self.model_switch_allowed,
+            "human_authorization_reference": self.human_authorization_reference,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        out = dict(self.identity_payload)
+        out["authorization_identity"] = self.authorization_identity
+        if self.observational_metadata is not None:
+            out["observational_metadata"] = _plain(self.observational_metadata)
+        return out
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict(), identity_critical=False)
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "CloudExecutionAuthorization":
+        row = _mapping(value, "cloud execution authorization")
+        _exact_fields(
+            row,
+            _CLOUD_EXECUTION_AUTHORIZATION_REQUIRED_FIELDS,
+            "cloud execution authorization",
+            _CLOUD_EXECUTION_AUTHORIZATION_OPTIONAL_FIELDS,
+        )
+        return cls(
+            schema_version=row["schema_version"],
+            authorization_policy_version=row["authorization_policy_version"],
+            run_identity=row["run_identity"],
+            context_identity=row["context_identity"],
+            request_identity=row["request_identity"],
+            model_identifier=row["model_identifier"],
+            provider_identifier=row["provider_identifier"],
+            account_boundary_reference=row["account_boundary_reference"],
+            authorized_request_count=row["authorized_request_count"],
+            authorized_attempt_count=row["authorized_attempt_count"],
+            retry_policy=row["retry_policy"],
+            fallback_allowed=row["fallback_allowed"],
+            model_switch_allowed=row["model_switch_allowed"],
+            human_authorization_reference=row["human_authorization_reference"],
+            authorization_identity=row["authorization_identity"],
+            observational_metadata=row.get("observational_metadata"),
+        )
+
+
+CloudExecutionAuthorizationValidationError = CloudContextAdmissionValidationError
+
+
+@dataclass(frozen=True, slots=True)
+class CloudResponse:
+    """Pure-data record of one untrusted provider response transport envelope."""
+
+    schema_version: str
+    request_identity: str
+    attempt_number: int
+    raw_response_sha256: str
+    raw_response_size_bytes: int
+    response_identity: str
+    provider_identifier: str
+    actual_model_identifier: str
+    provider_request_id: str
+    account_boundary_reference: str
+    provider_usage_if_available: Mapping[str, object] | None
+    error_metadata: Mapping[str, object] | None
+
+    def __post_init__(self) -> None:
+        try:
+            validate_schema_version(CLOUD_RESPONSE_SCHEMA_ID, self.schema_version)
+        except UnknownSchemaMajorVersionError as exc:
+            _fail(str(exc), FailureCode.MR05_UNKNOWN_SCHEMA_MAJOR)
+        except (UnsupportedSchemaVersionError, TypeError, ValueError) as exc:
+            _fail(str(exc))
+
+        request_identity = _sha(self.request_identity, "request_identity")
+        attempt_number = _integer(self.attempt_number, "attempt_number", minimum=1)
+        raw_response_sha256 = _sha(
+            self.raw_response_sha256, "raw_response_sha256"
+        )
+        raw_response_size_bytes = _integer(
+            self.raw_response_size_bytes, "raw_response_size_bytes"
+        )
+        provider_identifier = _text(
+            self.provider_identifier, "provider_identifier", maximum=256
+        )
+        actual_model_identifier = _text(
+            self.actual_model_identifier, "actual_model_identifier", maximum=256
+        )
+        provider_request_id = _text(
+            self.provider_request_id, "provider_request_id", maximum=2048
+        )
+        account_boundary_reference = _text(
+            self.account_boundary_reference,
+            "account_boundary_reference",
+            maximum=2048,
+        )
+        provider_usage = _transport_metadata(
+            self.provider_usage_if_available, "provider_usage_if_available"
+        )
+        error_metadata = _transport_metadata(self.error_metadata, "error_metadata")
+
+        object.__setattr__(self, "schema_version", CLOUD_RESPONSE_SCHEMA_VERSION)
+        object.__setattr__(self, "request_identity", request_identity)
+        object.__setattr__(self, "attempt_number", attempt_number)
+        object.__setattr__(self, "raw_response_sha256", raw_response_sha256)
+        object.__setattr__(self, "raw_response_size_bytes", raw_response_size_bytes)
+        object.__setattr__(self, "provider_identifier", provider_identifier)
+        object.__setattr__(self, "actual_model_identifier", actual_model_identifier)
+        object.__setattr__(self, "provider_request_id", provider_request_id)
+        object.__setattr__(
+            self, "account_boundary_reference", account_boundary_reference
+        )
+        object.__setattr__(self, "provider_usage_if_available", provider_usage)
+        object.__setattr__(self, "error_metadata", error_metadata)
+
+        declared_identity = _sha(self.response_identity, "response_identity")
+        try:
+            computed_identity = sha256_canonical(self.identity_payload)
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            _fail(str(exc), FailureCode.MR05_MODEL_PROVIDER_ERROR)
+        if declared_identity != computed_identity:
+            _fail(
+                "response_identity does not match frozen cloud-response semantics",
+                FailureCode.HASH_MISMATCH,
+            )
+        object.__setattr__(self, "response_identity", declared_identity)
+
+    @property
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "request_identity": self.request_identity,
+            "attempt_number": self.attempt_number,
+            "raw_response_sha256": self.raw_response_sha256,
+            "raw_response_size_bytes": self.raw_response_size_bytes,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            **self.identity_payload,
+            "response_identity": self.response_identity,
+            "provider_identifier": self.provider_identifier,
+            "actual_model_identifier": self.actual_model_identifier,
+            "provider_request_id": self.provider_request_id,
+            "account_boundary_reference": self.account_boundary_reference,
+            "provider_usage_if_available": _plain(self.provider_usage_if_available),
+            "error_metadata": _plain(self.error_metadata),
+        }
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict(), identity_critical=False)
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "CloudResponse":
+        row = _mapping(value, "cloud response")
+        _exact_fields(row, _CLOUD_RESPONSE_REQUIRED_FIELDS, "cloud response")
+        return cls(
+            schema_version=row["schema_version"],
+            request_identity=row["request_identity"],
+            attempt_number=row["attempt_number"],
+            raw_response_sha256=row["raw_response_sha256"],
+            raw_response_size_bytes=row["raw_response_size_bytes"],
+            response_identity=row["response_identity"],
+            provider_identifier=row["provider_identifier"],
+            actual_model_identifier=row["actual_model_identifier"],
+            provider_request_id=row["provider_request_id"],
+            account_boundary_reference=row["account_boundary_reference"],
+            provider_usage_if_available=row["provider_usage_if_available"],
+            error_metadata=row["error_metadata"],
+        )
+
+
+CloudResponseValidationError = CloudContextAdmissionValidationError
+
+
 def admit_cloud_context(
     bounded_context: BoundedContextPackage | Mapping[str, object],
     disclosure_record: DisclosureRecord | Mapping[str, object],
@@ -994,6 +1379,193 @@ def canonical_cloud_request_bytes(value: CloudRequest | Mapping[str, object]) ->
     return record.canonical_bytes()
 
 
+def build_cloud_execution_authorization(
+    cloud_request: CloudRequest | Mapping[str, object],
+    *,
+    provider_identifier: object,
+    account_boundary_reference: object,
+    observational_metadata: Mapping[str, object] | None = None,
+) -> CloudExecutionAuthorization:
+    """Bind one request to one provider/account/Human authorization boundary."""
+
+    request = (
+        cloud_request
+        if isinstance(cloud_request, CloudRequest)
+        else CloudRequest.from_mapping(cloud_request)
+    )
+    semantic = {
+        "schema_version": CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_VERSION,
+        "authorization_policy_version": CLOUD_EXECUTION_AUTHORIZATION_POLICY_VERSION,
+        "run_identity": request.run_identity,
+        "context_identity": request.context_identity,
+        "request_identity": request.request_identity,
+        "model_identifier": request.model_identifier,
+        "provider_identifier": _text(
+            provider_identifier, "provider_identifier", maximum=256
+        ),
+        "account_boundary_reference": _text(
+            account_boundary_reference,
+            "account_boundary_reference",
+            maximum=2048,
+        ),
+        "authorized_request_count": 1,
+        "authorized_attempt_count": 1,
+        "retry_policy": CLOUD_EXECUTION_RETRY_POLICY,
+        "fallback_allowed": False,
+        "model_switch_allowed": False,
+        "human_authorization_reference": _human_authorization_reference(
+            request.human_authorization_reference
+        ),
+    }
+    try:
+        authorization_identity = sha256_canonical(semantic)
+    except (CanonicalizationError, TypeError, ValueError) as exc:
+        _fail(str(exc), FailureCode.MR05_MODEL_UNAUTHORIZED)
+    return CloudExecutionAuthorization(
+        **semantic,
+        authorization_identity=authorization_identity,
+        observational_metadata=observational_metadata,
+    )
+
+
+def compute_cloud_execution_authorization_identity(
+    value: CloudExecutionAuthorization | Mapping[str, object],
+) -> str:
+    """Recompute the exact execution-authorization identity."""
+
+    record = (
+        value
+        if isinstance(value, CloudExecutionAuthorization)
+        else CloudExecutionAuthorization.from_mapping(value)
+    )
+    return sha256_canonical(record.identity_payload)
+
+
+def validate_cloud_execution_authorization(
+    authorization: CloudExecutionAuthorization | Mapping[str, object],
+    cloud_request: CloudRequest | Mapping[str, object],
+) -> CloudExecutionAuthorization:
+    """Fail closed unless authorization binds the exact request and Human reference."""
+
+    record = (
+        authorization
+        if isinstance(authorization, CloudExecutionAuthorization)
+        else CloudExecutionAuthorization.from_mapping(authorization)
+    )
+    request = (
+        cloud_request
+        if isinstance(cloud_request, CloudRequest)
+        else CloudRequest.from_mapping(cloud_request)
+    )
+    if (
+        record.run_identity != request.run_identity
+        or record.context_identity != request.context_identity
+        or record.request_identity != request.request_identity
+        or record.model_identifier != request.model_identifier
+        or record.human_authorization_reference
+        != request.human_authorization_reference
+    ):
+        _fail(
+            "execution authorization does not bind the exact cloud request",
+            FailureCode.MR05_MODEL_UNAUTHORIZED,
+        )
+    return record
+
+
+def build_cloud_response_record(
+    cloud_request: CloudRequest | Mapping[str, object],
+    authorization: CloudExecutionAuthorization | Mapping[str, object],
+    *,
+    raw_provider_response: bytes,
+    provider_identifier: object,
+    actual_model_identifier: object,
+    provider_request_id: object,
+    account_boundary_reference: object,
+    provider_usage_if_available: Mapping[str, object] | None = None,
+    error_metadata: Mapping[str, object] | None = None,
+) -> CloudResponse:
+    """Capture one raw provider response as an untrusted pure-data record."""
+
+    request = (
+        cloud_request
+        if isinstance(cloud_request, CloudRequest)
+        else CloudRequest.from_mapping(cloud_request)
+    )
+    validate_cloud_execution_authorization(authorization, request)
+    if type(raw_provider_response) is not bytes:
+        _fail(
+            "raw_provider_response must be immutable bytes",
+            FailureCode.MR05_MODEL_PROVIDER_ERROR,
+        )
+    semantic = {
+        "schema_version": CLOUD_RESPONSE_SCHEMA_VERSION,
+        "request_identity": request.request_identity,
+        "attempt_number": request.attempt_number,
+        "raw_response_sha256": sha256_bytes(raw_provider_response),
+        "raw_response_size_bytes": len(raw_provider_response),
+    }
+    try:
+        response_identity = sha256_canonical(semantic)
+    except (CanonicalizationError, TypeError, ValueError) as exc:
+        _fail(str(exc), FailureCode.MR05_MODEL_PROVIDER_ERROR)
+    return CloudResponse(
+        **semantic,
+        response_identity=response_identity,
+        provider_identifier=provider_identifier,
+        actual_model_identifier=actual_model_identifier,
+        provider_request_id=provider_request_id,
+        account_boundary_reference=account_boundary_reference,
+        provider_usage_if_available=provider_usage_if_available,
+        error_metadata=error_metadata,
+    )
+
+
+def compute_cloud_response_identity(value: CloudResponse | Mapping[str, object]) -> str:
+    """Recompute the exact transport response identity."""
+
+    record = value if isinstance(value, CloudResponse) else CloudResponse.from_mapping(value)
+    return sha256_canonical(record.identity_payload)
+
+
+def canonical_cloud_response_bytes(value: CloudResponse | Mapping[str, object]) -> bytes:
+    """Return canonical bytes for the response record; raw provider bytes are absent."""
+
+    record = value if isinstance(value, CloudResponse) else CloudResponse.from_mapping(value)
+    return record.canonical_bytes()
+
+
+def validate_cloud_response_binding(
+    response: CloudResponse | Mapping[str, object],
+    cloud_request: CloudRequest | Mapping[str, object],
+    authorization: CloudExecutionAuthorization | Mapping[str, object],
+) -> CloudResponse:
+    """Validate transport bindings before any downstream proposal parsing."""
+
+    record = response if isinstance(response, CloudResponse) else CloudResponse.from_mapping(response)
+    request = (
+        cloud_request
+        if isinstance(cloud_request, CloudRequest)
+        else CloudRequest.from_mapping(cloud_request)
+    )
+    auth = validate_cloud_execution_authorization(authorization, request)
+    if record.request_identity != request.request_identity:
+        _fail("response request binding mismatch", FailureCode.MR05_MODEL_PROVIDER_ERROR)
+    if record.attempt_number != request.attempt_number or request.attempt_number != 1:
+        _fail("response attempt binding mismatch", FailureCode.MR05_MODEL_PROVIDER_ERROR)
+    if record.provider_identifier != auth.provider_identifier:
+        _fail("response provider binding mismatch", FailureCode.MR05_MODEL_PROVIDER_ERROR)
+    if (
+        record.actual_model_identifier != auth.model_identifier
+        or record.actual_model_identifier != request.model_identifier
+    ):
+        _fail("response model binding mismatch", FailureCode.MR05_MODEL_PROVIDER_ERROR)
+    if record.account_boundary_reference != auth.account_boundary_reference:
+        _fail("response account binding mismatch", FailureCode.MR05_MODEL_PROVIDER_ERROR)
+    if record.error_metadata is not None:
+        _fail("provider returned error metadata", FailureCode.MR05_MODEL_PROVIDER_ERROR)
+    return record
+
+
 def not_implemented(*args: object, **kwargs: object) -> None:
     """Retain the legacy non-operational marker for direct callers."""
 
@@ -1009,6 +1581,12 @@ __all__ = (
     "CLOUD_REQUEST_SCHEMA_VERSION",
     "CLOUD_REQUEST_POLICY_VERSION",
     "CLOUD_REQUEST_REQUIRED_RESPONSE_SCHEMA",
+    "CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_ID",
+    "CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_VERSION",
+    "CLOUD_EXECUTION_AUTHORIZATION_POLICY_VERSION",
+    "CLOUD_EXECUTION_RETRY_POLICY",
+    "CLOUD_RESPONSE_SCHEMA_ID",
+    "CLOUD_RESPONSE_SCHEMA_VERSION",
     "CLOUD_REQUEST_REASONING_METADATA",
     "NO_REPACK_POLICY",
     "PARTIAL_CONTEXT_TRUNCATION",
@@ -1029,17 +1607,26 @@ __all__ = (
     "DEPENDENCY_EXECUTION_IMPLEMENTATION_COUNT",
     "EVIDENCE_PERSISTENCE_COUNT",
     "CLOUD_REQUEST_BUILD_COUNT",
+    "CLOUD_EXECUTION_AUTHORIZATION_BUILD_COUNT",
+    "CLOUD_RESPONSE_RECORD_BUILD_COUNT",
+    "CLOUD_RESPONSE_BINDING_VALIDATION_COUNT",
     "LIVE_CLOUD_EXECUTION_COUNT",
     "CONTEXT_REPACK_IMPLEMENTATION_COUNT",
     "PARTIAL_CONTEXT_TRUNCATION_IMPLEMENTATION_COUNT",
     "CLOUD_CONTEXT_IDENTITY_PREIMAGE",
     "CLOUD_REQUEST_IDENTITY_PREIMAGE",
+    "CLOUD_EXECUTION_AUTHORIZATION_IDENTITY_PREIMAGE",
+    "CLOUD_RESPONSE_IDENTITY_PREIMAGE",
     "CloudContextAdmissionValidationError",
     "CloudContextValidationError",
     "CloudContext",
     "CloudContextAdmission",
     "CloudRequestValidationError",
     "CloudRequest",
+    "CloudExecutionAuthorizationValidationError",
+    "CloudExecutionAuthorization",
+    "CloudResponseValidationError",
+    "CloudResponse",
     "admit_cloud_context",
     "build_cloud_context",
     "compute_cloud_context_identity",
@@ -1047,5 +1634,12 @@ __all__ = (
     "build_cloud_request",
     "compute_cloud_request_identity",
     "canonical_cloud_request_bytes",
+    "build_cloud_execution_authorization",
+    "compute_cloud_execution_authorization_identity",
+    "validate_cloud_execution_authorization",
+    "build_cloud_response_record",
+    "compute_cloud_response_identity",
+    "canonical_cloud_response_bytes",
+    "validate_cloud_response_binding",
     "not_implemented",
 )

@@ -728,6 +728,265 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             failures.FailureCode.HASH_MISMATCH.value,
         )
 
+    def test_execution_authorization_schema_identity_and_request_binding(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://mr15d/r2",
+        )
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+            observational_metadata={"note": "non-authoritative"},
+        )
+        self.assertEqual(authorization.schema_version, "1.0.0")
+        self.assertEqual(authorization.authorization_policy_version, "1.0.0")
+        self.assertEqual(authorization.authorized_request_count, 1)
+        self.assertEqual(authorization.authorized_attempt_count, 1)
+        self.assertEqual(authorization.retry_policy, "ZERO_BY_DEFAULT")
+        self.assertFalse(authorization.fallback_allowed)
+        self.assertFalse(authorization.model_switch_allowed)
+        self.assertEqual(
+            tuple(authorization.identity_payload),
+            cloud_boundary.CLOUD_EXECUTION_AUTHORIZATION_IDENTITY_PREIMAGE,
+        )
+        self.assertEqual(
+            authorization.authorization_identity,
+            identity.sha256_canonical(authorization.identity_payload),
+        )
+        self.assertEqual(
+            cloud_boundary.compute_cloud_execution_authorization_identity(authorization),
+            authorization.authorization_identity,
+        )
+        self.assertIs(
+            cloud_boundary.validate_cloud_execution_authorization(
+                authorization, request
+            ),
+            authorization,
+        )
+        self.assertIn(
+            "human_authorization_reference", authorization.identity_payload
+        )
+        self.assertNotIn("observational_metadata", authorization.identity_payload)
+        self.assertEqual(
+            cloud_boundary.SCHEMA_VERSIONS["mr05.cloud_execution_authorization"],
+            "1.0.0",
+        )
+        self.assertEqual(
+            cloud_boundary.SCHEMA_VERSIONS["mr05.cloud_response"],
+            "1.0.0",
+        )
+
+    def test_human_authorization_reference_changes_execution_authorization_identity_and_cross_use_fails(self):
+        context = self._admit(self._context_package())
+        first_request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://one",
+        )
+        second_request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://two",
+        )
+        self.assertEqual(first_request.request_identity, second_request.request_identity)
+        first_auth = cloud_boundary.build_cloud_execution_authorization(
+            first_request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        second_auth = cloud_boundary.build_cloud_execution_authorization(
+            second_request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        self.assertNotEqual(
+            first_auth.authorization_identity, second_auth.authorization_identity
+        )
+        with self.assertRaises(
+            cloud_boundary.CloudExecutionAuthorizationValidationError
+        ) as caught:
+            cloud_boundary.validate_cloud_execution_authorization(
+                first_auth, second_request
+            )
+        self.assertEqual(
+            caught.exception.failure_code,
+            failures.FailureCode.MR05_MODEL_UNAUTHORIZED.value,
+        )
+
+    def test_execution_authorization_rejects_non_single_call_policies_and_unknown_secret_fields(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://mr15d/r2",
+        )
+        base = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        ).to_dict()
+        for field, value in (
+            ("authorized_request_count", 2),
+            ("authorized_attempt_count", 2),
+            ("retry_policy", "RETRY_ONCE"),
+            ("fallback_allowed", True),
+            ("model_switch_allowed", True),
+        ):
+            candidate = copy.deepcopy(base)
+            candidate[field] = value
+            candidate["authorization_identity"] = identity.sha256_canonical(
+                {
+                    key: candidate[key]
+                    for key in cloud_boundary.CLOUD_EXECUTION_AUTHORIZATION_IDENTITY_PREIMAGE
+                }
+            )
+            with self.subTest(field=field), self.assertRaises(
+                cloud_boundary.CloudExecutionAuthorizationValidationError
+            ) as caught:
+                cloud_boundary.CloudExecutionAuthorization.from_mapping(candidate)
+            self.assertEqual(
+                caught.exception.failure_code,
+                failures.FailureCode.MR05_MODEL_UNAUTHORIZED.value,
+            )
+        for forbidden in ("api_token", "credential_secret"):
+            candidate = copy.deepcopy(base)
+            candidate[forbidden] = "forbidden-secret-material"
+            with self.subTest(forbidden=forbidden), self.assertRaises(
+                cloud_boundary.CloudExecutionAuthorizationValidationError
+            ):
+                cloud_boundary.CloudExecutionAuthorization.from_mapping(candidate)
+
+    def test_cloud_response_identity_binds_raw_bytes_request_and_attempt_only(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://mr15d/r2",
+        )
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        raw = b'{"proposal":"one"}'
+        response = cloud_boundary.build_cloud_response_record(
+            request,
+            authorization,
+            raw_provider_response=raw,
+            provider_identifier="provider-a",
+            actual_model_identifier="model-a",
+            provider_request_id="provider-request-one",
+            account_boundary_reference="account://boundary-a",
+            provider_usage_if_available={"input_tokens": 10},
+        )
+        self.assertEqual(response.raw_response_sha256, identity.sha256_bytes(raw))
+        self.assertEqual(response.raw_response_size_bytes, len(raw))
+        self.assertEqual(
+            tuple(response.identity_payload),
+            cloud_boundary.CLOUD_RESPONSE_IDENTITY_PREIMAGE,
+        )
+        self.assertEqual(
+            response.response_identity,
+            identity.sha256_canonical(response.identity_payload),
+        )
+        self.assertEqual(
+            cloud_boundary.compute_cloud_response_identity(response),
+            response.response_identity,
+        )
+        self.assertNotIn("raw_provider_response", response.to_dict())
+        transport_variant = cloud_boundary.build_cloud_response_record(
+            request,
+            authorization,
+            raw_provider_response=raw,
+            provider_identifier="untrusted-provider-metadata",
+            actual_model_identifier="untrusted-model-metadata",
+            provider_request_id="different-request-id",
+            account_boundary_reference="untrusted-account-metadata",
+            provider_usage_if_available={"input_tokens": 999},
+        )
+        self.assertEqual(response.response_identity, transport_variant.response_identity)
+        changed_raw = cloud_boundary.build_cloud_response_record(
+            request,
+            authorization,
+            raw_provider_response=b'{"proposal":"two"}',
+            provider_identifier="provider-a",
+            actual_model_identifier="model-a",
+            provider_request_id="provider-request-one",
+            account_boundary_reference="account://boundary-a",
+        )
+        self.assertNotEqual(response.response_identity, changed_raw.response_identity)
+
+    def test_cloud_response_binding_rejects_transport_mismatch_and_provider_error(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://mr15d/r2",
+        )
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        response = cloud_boundary.build_cloud_response_record(
+            request,
+            authorization,
+            raw_provider_response=b'{"proposal":"one"}',
+            provider_identifier="provider-a",
+            actual_model_identifier="model-a",
+            provider_request_id="provider-request-one",
+            account_boundary_reference="account://boundary-a",
+        )
+        self.assertIs(
+            cloud_boundary.validate_cloud_response_binding(
+                response, request, authorization
+            ),
+            response,
+        )
+        variants = []
+        for field, value in (
+            ("provider_identifier", "provider-b"),
+            ("actual_model_identifier", "model-b"),
+            ("account_boundary_reference", "account://boundary-b"),
+            ("error_metadata", {"provider_error": "denied"}),
+        ):
+            candidate = copy.deepcopy(response.to_dict())
+            candidate[field] = value
+            variants.append(candidate)
+        request_mismatch = copy.deepcopy(response.to_dict())
+        request_mismatch["request_identity"] = "f" * 64
+        request_mismatch["response_identity"] = identity.sha256_canonical(
+            {
+                key: request_mismatch[key]
+                for key in cloud_boundary.CLOUD_RESPONSE_IDENTITY_PREIMAGE
+            }
+        )
+        variants.append(request_mismatch)
+        attempt_mismatch = copy.deepcopy(response.to_dict())
+        attempt_mismatch["attempt_number"] = 2
+        attempt_mismatch["response_identity"] = identity.sha256_canonical(
+            {
+                key: attempt_mismatch[key]
+                for key in cloud_boundary.CLOUD_RESPONSE_IDENTITY_PREIMAGE
+            }
+        )
+        variants.append(attempt_mismatch)
+        for candidate in variants:
+            record = cloud_boundary.CloudResponse.from_mapping(candidate)
+            with self.subTest(candidate=candidate), self.assertRaises(
+                cloud_boundary.CloudResponseValidationError
+            ) as caught:
+                cloud_boundary.validate_cloud_response_binding(
+                    record, request, authorization
+                )
+            self.assertEqual(
+                caught.exception.failure_code,
+                failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value,
+            )
+
     def test_request_builder_has_no_live_execution_or_retry_authority(self):
         context = self._admit(self._context_package())
         request = cloud_boundary.build_cloud_request(

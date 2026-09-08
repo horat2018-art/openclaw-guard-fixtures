@@ -20,7 +20,7 @@ class DependencyPinTests(unittest.TestCase):
         self.assertEqual(contracts.MR05C_R2_CONTRACT_SHA256, 'c7e561000b43677b65ffe8ce46ba44d679de9c75c1febe2471114bccd7072cf9')
         self.assertEqual(contracts.MR05D_R2_CONTRACT_SHA256, '44fac0d7abe60487202b7937ebe1055a347c1ab30dd0ef90e0e4fcccd1826000')
         self.assertEqual(set(contracts.SCHEMA_VERSIONS.values()), {'1.0.0'})
-        self.assertEqual(len(contracts.SCHEMA_VERSIONS), 26)
+        self.assertEqual(len(contracts.SCHEMA_VERSIONS), 28)
 
     def test_frozen_mappings_and_versions_fail_closed(self):
         schema_before = contracts.schema_version_for('mr05.metrics')

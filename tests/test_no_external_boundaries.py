@@ -93,6 +93,11 @@ class BoundaryTests(unittest.TestCase):
                     with self.subTest(path=path.name, token=token):
                         self.assertNotIn(token, text)
                 self.assertIn('CLOUD_CONTEXT_ADMISSION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('CLOUD_EXECUTION_AUTHORIZATION_BUILD_COUNT = 1', text)
+                self.assertIn('CLOUD_RESPONSE_RECORD_BUILD_COUNT = 1', text)
+                self.assertIn('CLOUD_RESPONSE_BINDING_VALIDATION_COUNT = 1', text)
+                self.assertIn('class CloudExecutionAuthorization:', text)
+                self.assertIn('class CloudResponse:', text)
                 for name in (
                     'FILESYSTEM_SOURCE_READ_COUNT = 0',
                     'FILESYSTEM_WRITE_IMPLEMENTATION_COUNT = 0',
