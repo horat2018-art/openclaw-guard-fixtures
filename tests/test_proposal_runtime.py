@@ -3,7 +3,7 @@ import inspect
 import json
 import unittest
 
-from hai_mr05 import failures, identity, proposal
+from hai_mr05 import cloud_boundary, failures, identity, proposal
 
 
 class ProposalRuntimeTests(unittest.TestCase):
@@ -270,6 +270,119 @@ class ProposalRuntimeTests(unittest.TestCase):
         duplicate = '{"schema_version":"1.0.0","schema_version":"1.0.0"}'
         with self.assertRaises(proposal.ProposalValidationError):
             proposal.parse_cloud_proposal_json(duplicate)
+
+    def _admission_request(self):
+        semantic = {
+            "schema_version": "1.0.0",
+            "run_identity": "2" * 64,
+            "context_identity": "6" * 64,
+            "model_identifier": "model-a",
+            "reasoning_metadata": {
+                "OPENCLAW_REASONING": "ON",
+                "PROJECT_REASONING_PROFILE": "MAX",
+            },
+            "attempt_number": 1,
+            "max_attempts": 1,
+            "required_response_schema": "mr05-cloud-proposal:1.0.0",
+            "request_policy_version": "1.0.0",
+        }
+        return cloud_boundary.CloudRequest(
+            **semantic,
+            request_identity=identity.sha256_canonical(semantic),
+            human_authorization_reference="human://mr15f/r1",
+        )
+
+    def _admission_chain(self, **proposal_overrides):
+        request = self._admission_request()
+        proposer_metadata = proposal_overrides.pop(
+            "proposer_metadata",
+            {
+                "model_identifier": "model-a",
+                "provider_request_id": "provider-request-1",
+                "attempt_number": 1,
+                "usage_if_available": {"input_tokens": 10, "ratio": 0.5},
+            },
+        )
+        record_inputs = {
+            "request_identity": request.request_identity,
+            "run_identity": request.run_identity,
+            "bound_context_identity": request.context_identity,
+            "proposer_metadata": proposer_metadata,
+        }
+        record_inputs.update(proposal_overrides)
+        record = self._record(**record_inputs)
+        raw = json.dumps(record, separators=(",", ":")).encode("utf-8")
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request, provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        response = cloud_boundary.build_cloud_response_record(
+            request, authorization, raw_provider_response=raw,
+            provider_identifier="provider-a", actual_model_identifier="model-a",
+            provider_request_id="provider-request-1",
+            account_boundary_reference="account://boundary-a",
+            provider_usage_if_available={"input_tokens": 10, "ratio": 0.5},
+        )
+        return request, authorization, response, raw, record
+
+    def test_cloud_response_proposal_admission_accepts_exact_bound_chain(self):
+        request, authorization, response, raw, record = self._admission_chain()
+        admitted = proposal.admit_cloud_response_proposal(raw, response, request, authorization)
+        self.assertEqual(admitted, proposal.CloudProposal.from_mapping(record))
+        self.assertEqual(proposal.CLOUD_RESPONSE_PROPOSAL_ADMISSION_IMPLEMENTATION_COUNT, 1)
+
+    def test_cloud_response_proposal_admission_rejects_raw_byte_mismatch(self):
+        request, authorization, response, raw, _ = self._admission_chain()
+        with self.assertRaises(proposal.ProposalValidationError) as caught:
+            proposal.admit_cloud_response_proposal(raw + b" ", response, request, authorization)
+        self.assertEqual(caught.exception.failure_code, failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value)
+
+    def test_cloud_response_proposal_admission_rejects_request_run_context_mismatch(self):
+        for field, value in (("request_identity", "a" * 64), ("run_identity", "b" * 64), ("bound_context_identity", "c" * 64)):
+            request, authorization, response, raw, _ = self._admission_chain(**{field: value})
+            with self.subTest(field=field), self.assertRaises(proposal.ProposalValidationError) as caught:
+                proposal.admit_cloud_response_proposal(raw, response, request, authorization)
+            self.assertEqual(caught.exception.failure_code, failures.FailureCode.PROPOSAL_PACKAGE_BINDING_MISMATCH.value)
+
+    def test_cloud_response_proposal_admission_rejects_transport_metadata_mismatch(self):
+        cases = (
+            {"model_identifier":"model-b","provider_request_id":"provider-request-1","attempt_number":1,"usage_if_available":{"input_tokens":10,"ratio":0.5}},
+            {"model_identifier":"model-a","provider_request_id":"provider-request-2","attempt_number":1,"usage_if_available":{"input_tokens":10,"ratio":0.5}},
+            {"model_identifier":"model-a","provider_request_id":"provider-request-1","attempt_number":2,"usage_if_available":{"input_tokens":10,"ratio":0.5}},
+            {"model_identifier":"model-a","provider_request_id":"provider-request-1","attempt_number":1,"usage_if_available":{"input_tokens":11,"ratio":0.5}},
+        )
+        for proposer_metadata in cases:
+            request, authorization, response, raw, _ = self._admission_chain(proposer_metadata=proposer_metadata)
+            with self.subTest(proposer_metadata=proposer_metadata), self.assertRaises(proposal.ProposalValidationError) as caught:
+                proposal.admit_cloud_response_proposal(raw, response, request, authorization)
+            self.assertEqual(caught.exception.failure_code, failures.FailureCode.PROPOSAL_PACKAGE_BINDING_MISMATCH.value)
+
+    def test_cloud_response_proposal_admission_preserves_response_binding_failure(self):
+        request, authorization, _, raw, _ = self._admission_chain()
+        mismatched = cloud_boundary.build_cloud_response_record(
+            request, authorization, raw_provider_response=raw,
+            provider_identifier="provider-b", actual_model_identifier="model-a",
+            provider_request_id="provider-request-1", account_boundary_reference="account://boundary-a",
+            provider_usage_if_available={"input_tokens":10,"ratio":0.5},
+        )
+        with self.assertRaises(cloud_boundary.CloudResponseValidationError) as caught:
+            proposal.admit_cloud_response_proposal(raw, mismatched, request, authorization)
+        self.assertEqual(caught.exception.failure_code, failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value)
+
+    def test_cloud_response_proposal_admission_preserves_parser_failure_code(self):
+        request = self._admission_request()
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request, provider_identifier="provider-a", account_boundary_reference="account://boundary-a",
+        )
+        raw = b'{"schema_version":"1.0.0","schema_version":"1.0.0"}'
+        response = cloud_boundary.build_cloud_response_record(
+            request, authorization, raw_provider_response=raw,
+            provider_identifier="provider-a", actual_model_identifier="model-a",
+            provider_request_id="provider-request-1", account_boundary_reference="account://boundary-a",
+        )
+        with self.assertRaises(proposal.ProposalValidationError) as caught:
+            proposal.admit_cloud_response_proposal(raw, response, request, authorization)
+        self.assertEqual(caught.exception.failure_code, failures.FailureCode.PROPOSER_SCHEMA_INVALID.value)
 
     def test_runtime_has_zero_external_verifier_and_human_gate_authority(self):
         self.assertEqual(proposal.PROPOSAL_PARSE_IMPLEMENTATION_COUNT, 1)

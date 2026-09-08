@@ -127,6 +127,8 @@ class BoundaryTests(unittest.TestCase):
                         self.assertNotIn(token, text)
                 self.assertIn('PROPOSAL_PARSE_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('PROPOSAL_IDENTITY_VALIDATION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('CLOUD_RESPONSE_PROPOSAL_ADMISSION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('def admit_cloud_response_proposal(', text)
                 for name in (
                     'FILESYSTEM_SOURCE_READ_COUNT = 0',
                     'FILESYSTEM_WRITE_IMPLEMENTATION_COUNT = 0',

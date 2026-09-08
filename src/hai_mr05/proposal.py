@@ -22,7 +22,7 @@ from .contracts import (
     validate_schema_version,
 )
 from .failures import FailureCode, phase_not_implemented
-from .identity import IdentityValidationError, require_sha256, sha256_canonical
+from .identity import IdentityValidationError, require_sha256, sha256_bytes, sha256_canonical
 
 PROPOSAL_SCHEMA_ID = "mr05.cloud_proposal"
 PROPOSAL_SCHEMA_VERSION = SCHEMA_VERSION
@@ -31,6 +31,7 @@ PROPOSAL_IDENTITY_AUTHORITY = "MR05B_MASTER_CONTRACT_SHA256"
 
 PROPOSAL_PARSE_IMPLEMENTATION_COUNT = 1
 PROPOSAL_IDENTITY_VALIDATION_IMPLEMENTATION_COUNT = 1
+CLOUD_RESPONSE_PROPOSAL_ADMISSION_IMPLEMENTATION_COUNT = 1
 FILESYSTEM_SOURCE_READ_COUNT = 0
 FILESYSTEM_WRITE_IMPLEMENTATION_COUNT = 0
 SUBPROCESS_EXECUTION_COUNT = 0
@@ -541,6 +542,61 @@ def parse_cloud_proposal_json(data: str | bytes) -> CloudProposal:
     return CloudProposal.from_mapping(value)
 
 
+def admit_cloud_response_proposal(
+    raw_provider_response: bytes,
+    response: object,
+    cloud_request: object,
+    authorization: object,
+) -> CloudProposal:
+    from . import cloud_boundary
+
+    request = (
+        cloud_request
+        if isinstance(cloud_request, cloud_boundary.CloudRequest)
+        else cloud_boundary.CloudRequest.from_mapping(cloud_request)
+    )
+    bound_response = cloud_boundary.validate_cloud_response_binding(
+        response, request, authorization
+    )
+    if type(raw_provider_response) is not bytes:
+        _fail(
+            "raw_provider_response must be immutable bytes",
+            FailureCode.MR05_MODEL_PROVIDER_ERROR,
+        )
+    if (
+        len(raw_provider_response) != bound_response.raw_response_size_bytes
+        or sha256_bytes(raw_provider_response) != bound_response.raw_response_sha256
+    ):
+        _fail(
+            "raw provider response bytes do not match qualified cloud response",
+            FailureCode.MR05_MODEL_PROVIDER_ERROR,
+        )
+
+    record = parse_cloud_proposal_json(raw_provider_response)
+    if (
+        record.request_identity != request.request_identity
+        or record.run_identity != request.run_identity
+        or record.bound_context_identity != request.context_identity
+    ):
+        _fail(
+            "cloud proposal is not bound to qualified cloud request",
+            FailureCode.PROPOSAL_PACKAGE_BINDING_MISMATCH,
+        )
+
+    metadata = record.proposer_metadata
+    if (
+        metadata.model_identifier != bound_response.actual_model_identifier
+        or metadata.provider_request_id != bound_response.provider_request_id
+        or metadata.attempt_number != bound_response.attempt_number
+        or metadata.usage_if_available != bound_response.provider_usage_if_available
+    ):
+        _fail(
+            "cloud proposal transport metadata is not bound to qualified cloud response",
+            FailureCode.PROPOSAL_PACKAGE_BINDING_MISMATCH,
+        )
+    return record
+
+
 def compute_proposal_identity(value: CloudProposal | Mapping[str, object]) -> str:
     record = parse_cloud_proposal(value)
     try:
@@ -563,6 +619,7 @@ __all__ = tuple(name for name in globals() if name.isupper()) + (
     "ProposalValidationError", "ProposalSourceRef", "ClaimConfidence",
     "ProposalClaim", "ProposalRecommendation", "ProposalUncertainty",
     "ProposerMetadata", "CloudProposal", "parse_cloud_proposal",
-    "parse_cloud_proposal_json", "compute_proposal_identity",
+    "parse_cloud_proposal_json", "admit_cloud_response_proposal",
+    "compute_proposal_identity",
     "canonical_cloud_proposal_bytes", "not_implemented",
 )
