@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from . import cloud_boundary, evidence, human_gate, proposal, verifier
+from .identity import sha256_bytes
 
 
 WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT = 1
@@ -54,6 +55,8 @@ class WorkflowCompositionResult:
     run_record: evidence.FrozenRunRecord
     cloud_context_record: cloud_boundary.CloudContext
     cloud_request_record: cloud_boundary.CloudRequest
+    cloud_execution_authorization_record: cloud_boundary.CloudExecutionAuthorization
+    cloud_response_record: cloud_boundary.CloudResponse
     proposal_record: proposal.CloudProposal
     verification_record: verifier.VerificationRecord
     human_gate_record: human_gate.HumanGateRecord | None
@@ -112,26 +115,54 @@ def _qualified_decision(
     return human_gate.HumanDecisionRecord.from_mapping(payload, human_gate=gate)
 
 
-def _validate_proposal_bindings(
+def _validate_remaining_proposal_bindings(
     record: proposal.CloudProposal,
     *,
     run: evidence.FrozenRunRecord,
-    context: cloud_boundary.CloudContext,
-    request: cloud_boundary.CloudRequest,
 ) -> None:
     expected = {
-        "request_identity": request.request_identity,
-        "run_identity": run.run_identity,
         "task_identity": run.task_identity,
         "bound_mr03_package_identity": run.mr03_result_identity,
         "bound_mr04_result_identity": run.mr04_result_identity,
-        "bound_context_identity": context.context_identity,
     }
     for field, expected_value in expected.items():
         if getattr(record, field) != expected_value:
             raise WorkflowCompositionError(
                 f"proposal {field} is not bound to the composed deterministic chain"
             )
+
+
+def _transport_evidence_artifacts(
+    authorization: cloud_boundary.CloudExecutionAuthorization,
+    response: cloud_boundary.CloudResponse,
+    admitted_proposal: proposal.CloudProposal,
+    raw_provider_response: bytes,
+) -> tuple[evidence.FrozenEvidenceArtifact, ...]:
+    authorization_bytes = authorization.canonical_bytes()
+    response_bytes = response.canonical_bytes()
+    return (
+        evidence.FrozenEvidenceArtifact(
+            relative_path="cloud/execution_authorization.json",
+            byte_size=len(authorization_bytes),
+            sha256=sha256_bytes(authorization_bytes),
+            artifact_type=cloud_boundary.CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_ID,
+            schema_version=authorization.schema_version,
+        ),
+        evidence.FrozenEvidenceArtifact(
+            relative_path="cloud/response.json",
+            byte_size=len(response_bytes),
+            sha256=sha256_bytes(response_bytes),
+            artifact_type=cloud_boundary.CLOUD_RESPONSE_SCHEMA_ID,
+            schema_version=response.schema_version,
+        ),
+        evidence.FrozenEvidenceArtifact(
+            relative_path="cloud/response.raw.json",
+            byte_size=len(raw_provider_response),
+            sha256=response.raw_response_sha256,
+            artifact_type=proposal.PROPOSAL_SCHEMA_ID,
+            schema_version=admitted_proposal.schema_version,
+        ),
+    )
 
 
 def _validate_human_bindings(
@@ -177,7 +208,9 @@ def compose_top_level_workflow(
     model_identifier: object,
     human_authorization_reference: object,
     estimated_token_metadata: Mapping[str, object],
-    proposal_record: object,
+    cloud_execution_authorization_record: object,
+    cloud_response_record: object,
+    raw_provider_response: bytes,
     legacy_verifier_result: object,
     verification_record: object,
     verifier_failure_records: object = (),
@@ -192,9 +225,10 @@ def compose_top_level_workflow(
 ) -> WorkflowCompositionResult:
     """Compose supplied deterministic records without executing external authority.
 
-    Proposal and Human Decision data are explicit discontinuity inputs. The function
-    never creates a proposal through a model/provider call and never makes a Human
-    decision. A supplied run must be the authoritative FrozenRunRecord shape; the
+    Cloud execution authorization, provider response data, raw provider-response
+    bytes, and Human Decision data are explicit discontinuity inputs. The function
+    never executes a model/provider call and never makes a Human decision. A supplied
+    run must be the authoritative FrozenRunRecord shape; the
     legacy controller RunRecord is intentionally not bridged or coerced.
     """
 
@@ -217,16 +251,19 @@ def compose_top_level_workflow(
         observational_metadata=request_observational_metadata,
     )
 
-    supplied_proposal = proposal.parse_cloud_proposal(proposal_record)
-    _validate_proposal_bindings(
-        supplied_proposal,
-        run=run,
-        context=context,
-        request=request,
+    authorization = cloud_boundary.validate_cloud_execution_authorization(
+        cloud_execution_authorization_record, request
     )
+    response = cloud_boundary.validate_cloud_response_binding(
+        cloud_response_record, request, authorization
+    )
+    admitted_proposal = proposal.admit_cloud_response_proposal(
+        raw_provider_response, response, request, authorization
+    )
+    _validate_remaining_proposal_bindings(admitted_proposal, run=run)
     supplied_verification = verifier.validate_verification_adapter(
         verification_record,
-        proposal=supplied_proposal,
+        proposal=admitted_proposal,
         context=context,
         legacy_result=legacy_verifier_result,
         failure_records=verifier_failure_records,
@@ -235,7 +272,7 @@ def compose_top_level_workflow(
     decision = _qualified_decision(human_decision_record, gate)
     _validate_human_bindings(
         run=run,
-        proposal_record=supplied_proposal,
+        proposal_record=admitted_proposal,
         verification_record=supplied_verification,
         gate=gate,
         decision=decision,
@@ -247,7 +284,7 @@ def compose_top_level_workflow(
         "disclosure_record": disclosure_record,
         "cloud_context_record": context,
         "cloud_request_record": request,
-        "proposal_record": supplied_proposal,
+        "proposal_record": admitted_proposal,
         "verification_record": supplied_verification,
         "metrics_record": metrics_record,
         "legacy_verifier_result": legacy_verifier_result,
@@ -256,8 +293,12 @@ def compose_top_level_workflow(
         "human_decision_record": decision,
         "failure_record": failure_record,
     }
+    transport_artifacts = _transport_evidence_artifacts(
+        authorization, response, admitted_proposal, raw_provider_response
+    )
     manifest = evidence.build_pre_final_evidence_manifest(
         **evidence_args,
+        additional_artifacts=transport_artifacts,
         observational_metadata=manifest_observational_metadata,
     )
     final_result = evidence.build_final_result(
@@ -270,7 +311,9 @@ def compose_top_level_workflow(
         run_record=run,
         cloud_context_record=context,
         cloud_request_record=request,
-        proposal_record=supplied_proposal,
+        cloud_execution_authorization_record=authorization,
+        cloud_response_record=response,
+        proposal_record=admitted_proposal,
         verification_record=supplied_verification,
         human_gate_record=gate,
         human_decision_record=decision,

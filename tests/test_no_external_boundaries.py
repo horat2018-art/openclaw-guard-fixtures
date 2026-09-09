@@ -182,6 +182,13 @@ class BoundaryTests(unittest.TestCase):
                     with self.subTest(path=path.name, token=token):
                         self.assertNotIn(token, text)
                 self.assertIn('WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('cloud_boundary.validate_cloud_execution_authorization(', text)
+                self.assertIn('cloud_boundary.validate_cloud_response_binding(', text)
+                self.assertIn('proposal.admit_cloud_response_proposal(', text)
+                self.assertNotIn('proposal.parse_cloud_proposal(', text)
+                self.assertIn('cloud/execution_authorization.json', text)
+                self.assertIn('cloud/response.json', text)
+                self.assertIn('cloud/response.raw.json', text)
                 for name in (
                     'WORKFLOW_EXECUTION_COUNT = 0',
                     'LIVE_CLOUD_EXECUTION_COUNT = 0',

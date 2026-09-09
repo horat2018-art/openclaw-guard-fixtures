@@ -1,7 +1,7 @@
 import inspect
 import unittest
 
-from hai_mr05 import cloud_boundary, disclosure, evidence, workflow
+from hai_mr05 import cloud_boundary, disclosure, evidence, failures, proposal, workflow
 try:
     import tests.test_final_result_runtime as _final_fixture_module
 except ModuleNotFoundError:
@@ -10,113 +10,133 @@ except ModuleNotFoundError:
 
 class WorkflowRuntimeTests(unittest.TestCase):
     @staticmethod
+    def _transport(chain, *, proposal_record=None):
+        proposal_record = chain["proposal"] if proposal_record is None else proposal_record
+        raw = proposal.canonical_cloud_proposal_bytes(proposal_record)
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            chain["cloud_request"], provider_identifier="provider-fixture",
+            account_boundary_reference="account://workflow-fixture",
+        )
+        metadata = proposal_record.proposer_metadata
+        response = cloud_boundary.build_cloud_response_record(
+            chain["cloud_request"], authorization, raw_provider_response=raw,
+            provider_identifier="provider-fixture", actual_model_identifier=metadata.model_identifier,
+            provider_request_id=metadata.provider_request_id,
+            account_boundary_reference="account://workflow-fixture",
+            provider_usage_if_available=None if metadata.usage_if_available is None else dict(metadata.usage_if_available),
+        )
+        return authorization, response, raw
+
+    @staticmethod
     def _compose(chain, **overrides):
+        authorization, response, raw = WorkflowRuntimeTests._transport(chain)
         args = {
-            "run_record": chain["run"],
-            "bounded_context_record": chain["bounded_context"],
-            "disclosure_record": chain["disclosure"],
-            "metrics_record": chain["metric"],
+            "run_record": chain["run"], "bounded_context_record": chain["bounded_context"],
+            "disclosure_record": chain["disclosure"], "metrics_record": chain["metric"],
             "model_identifier": "openai/gpt-5.6-luna",
             "human_authorization_reference": "human-auth:final-result-fixture",
             "estimated_token_metadata": _final_fixture_module.FinalResultRuntimeTests._token_metadata(),
-            "proposal_record": chain["proposal"],
-            "legacy_verifier_result": chain["legacy"],
-            "verification_record": chain["verification"],
+            "cloud_execution_authorization_record": authorization,
+            "cloud_response_record": response, "raw_provider_response": raw,
+            "legacy_verifier_result": chain["legacy"], "verification_record": chain["verification"],
             "verifier_failure_records": chain["verifier_failures"],
-            "human_gate_record": chain["gate"],
-            "human_decision_record": chain["decision"],
+            "human_gate_record": chain["gate"], "human_decision_record": chain["decision"],
             "failure_record": chain["failure"],
         }
         args.update(overrides)
         return workflow.compose_top_level_workflow(**args)
 
-    def test_exact_pass_chain_matches_existing_authoritative_chain(self):
+    def test_exact_pass_chain_admits_transport_and_matches_authoritative_final_chain(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
         composed = self._compose(chain)
-        expected = _final_fixture_module.FinalResultRuntimeTests._final(chain)
+        expected = _final_fixture_module.FinalResultRuntimeTests._final(chain, composed.evidence_manifest)
         self.assertEqual(composed.cloud_context_record.context_identity, chain["cloud_context"].context_identity)
         self.assertEqual(composed.cloud_request_record.request_identity, chain["cloud_request"].request_identity)
-        self.assertEqual(composed.evidence_manifest.manifest_identity, _final_fixture_module.FinalResultRuntimeTests._manifest(chain).manifest_identity)
+        self.assertEqual(composed.proposal_record, chain["proposal"])
         self.assertEqual(composed.final_result.final_result_identity, expected.final_result_identity)
+        self.assertEqual(composed.final_result.evidence_manifest_identity, composed.evidence_manifest.manifest_identity)
         self.assertEqual(composed.final_result.terminal_state, "VERIFIED_PASS_FOR_REVIEW")
+        artifacts = {item.relative_path: item for item in composed.evidence_manifest.artifacts}
+        self.assertEqual(artifacts["cloud/execution_authorization.json"].artifact_type, "mr05.cloud_execution_authorization")
+        self.assertEqual(artifacts["cloud/response.json"].artifact_type, "mr05.cloud_response")
+        self.assertEqual(artifacts["cloud/response.raw.json"].artifact_type, "mr05.cloud_proposal")
+        self.assertEqual(artifacts["cloud/response.raw.json"].sha256, composed.cloud_response_record.raw_response_sha256)
+        self.assertEqual(artifacts["cloud/response.raw.json"].byte_size, composed.cloud_response_record.raw_response_size_bytes)
 
     def test_human_approved_chain_consumes_only_explicit_supplied_decision(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
         composed = self._compose(chain)
         self.assertEqual(composed.human_decision_record.decision, "APPROVE")
         self.assertEqual(composed.final_result.human_decision_if_any, "APPROVE")
-        self.assertEqual(composed.final_result.final_result_identity, _final_fixture_module.FinalResultRuntimeTests._final(chain).final_result_identity)
+        self.assertEqual(composed.final_result.final_result_identity, _final_fixture_module.FinalResultRuntimeTests._final(chain, composed.evidence_manifest).final_result_identity)
 
     def test_human_terminal_state_without_explicit_decision_fails_closed(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
-        with self.assertRaises(workflow.WorkflowCompositionError):
-            self._compose(chain, human_decision_record=None)
+        with self.assertRaises(workflow.WorkflowCompositionError): self._compose(chain, human_decision_record=None)
 
     def test_verified_terminal_state_rejects_unsolicited_human_records(self):
         verified = _final_fixture_module.FinalResultRuntimeTests._full_chain()
         human = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
-        with self.assertRaises(workflow.WorkflowCompositionError):
-            self._compose(
-                verified,
-                human_gate_record=human["gate"],
-                human_decision_record=human["decision"],
-            )
+        with self.assertRaises(workflow.WorkflowCompositionError): self._compose(verified, human_gate_record=human["gate"], human_decision_record=human["decision"])
 
     def test_legacy_controller_runrecord_is_never_implicitly_bridged(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
-        legacy_run = evidence.build_run_record(
-            repository_commit="a" * 40,
-            task_identity="b" * 64,
-            contract_identities=("c" * 64,),
-            dependency_identities=("d" * 64,),
-            input_identities=("e" * 64,),
-        )
-        with self.assertRaisesRegex(workflow.WorkflowCompositionError, "controller RunRecord"):
-            self._compose(chain, run_record=legacy_run)
-        with self.assertRaises(workflow.WorkflowCompositionError):
-            self._compose(chain, run_record=legacy_run.to_dict())
+        legacy_run = evidence.build_run_record(repository_commit="a"*40, task_identity="b"*64, contract_identities=("c"*64,), dependency_identities=("d"*64,), input_identities=("e"*64,))
+        with self.assertRaisesRegex(workflow.WorkflowCompositionError, "controller RunRecord"): self._compose(chain, run_record=legacy_run)
+        with self.assertRaises(workflow.WorkflowCompositionError): self._compose(chain, run_record=legacy_run.to_dict())
 
-    def test_supplied_proposal_must_bind_to_composed_request(self):
+    def test_raw_proposal_request_binding_mismatch_preserves_admission_failure(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
-        wrong = _final_fixture_module.FinalResultRuntimeTests._proposal_with(chain["proposal"], request_identity="f" * 64)
-        with self.assertRaisesRegex(workflow.WorkflowCompositionError, "request_identity"):
-            self._compose(chain, proposal_record=wrong)
+        wrong = _final_fixture_module.FinalResultRuntimeTests._proposal_with(chain["proposal"], request_identity="f"*64)
+        _, response, raw = self._transport(chain, proposal_record=wrong)
+        with self.assertRaises(proposal.ProposalValidationError) as caught: self._compose(chain, cloud_response_record=response, raw_provider_response=raw)
+        self.assertEqual(caught.exception.failure_code, failures.FailureCode.PROPOSAL_PACKAGE_BINDING_MISMATCH.value)
+
+    def test_execution_authorization_mismatch_preserves_unauthorized_failure(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        other_request = cloud_boundary.build_cloud_request(chain["cloud_context"], model_identifier="openai/gpt-5.6-luna", human_authorization_reference="human-auth:other")
+        wrong = cloud_boundary.build_cloud_execution_authorization(other_request, provider_identifier="provider-fixture", account_boundary_reference="account://workflow-fixture")
+        with self.assertRaises(cloud_boundary.CloudExecutionAuthorizationValidationError) as caught: self._compose(chain, cloud_execution_authorization_record=wrong)
+        self.assertEqual(caught.exception.failure_code, failures.FailureCode.MR05_MODEL_UNAUTHORIZED.value)
+
+    def test_response_binding_mismatch_preserves_provider_error(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        authorization, _, raw = self._transport(chain); metadata = chain["proposal"].proposer_metadata
+        wrong = cloud_boundary.build_cloud_response_record(chain["cloud_request"], authorization, raw_provider_response=raw, provider_identifier="provider-other", actual_model_identifier=metadata.model_identifier, provider_request_id=metadata.provider_request_id, account_boundary_reference="account://workflow-fixture", provider_usage_if_available=dict(metadata.usage_if_available))
+        with self.assertRaises(cloud_boundary.CloudResponseValidationError) as caught: self._compose(chain, cloud_response_record=wrong)
+        self.assertEqual(caught.exception.failure_code, failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value)
+
+    def test_raw_response_byte_mismatch_preserves_provider_error(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        with self.assertRaises(proposal.ProposalValidationError) as caught: self._compose(chain, raw_provider_response=proposal.canonical_cloud_proposal_bytes(chain["proposal"])+b" ")
+        self.assertEqual(caught.exception.failure_code, failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value)
+
+    def test_transport_metadata_mismatch_preserves_proposal_binding_failure(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        authorization, _, raw = self._transport(chain); metadata = chain["proposal"].proposer_metadata
+        response = cloud_boundary.build_cloud_response_record(chain["cloud_request"], authorization, raw_provider_response=raw, provider_identifier="provider-fixture", actual_model_identifier=metadata.model_identifier, provider_request_id="provider-request-other", account_boundary_reference="account://workflow-fixture", provider_usage_if_available=dict(metadata.usage_if_available))
+        with self.assertRaises(proposal.ProposalValidationError) as caught: self._compose(chain, cloud_response_record=response)
+        self.assertEqual(caught.exception.failure_code, failures.FailureCode.PROPOSAL_PACKAGE_BINDING_MISMATCH.value)
+
+    def test_remaining_mr03_binding_is_still_enforced_by_workflow(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        wrong = _final_fixture_module.FinalResultRuntimeTests._proposal_with(chain["proposal"], bound_mr03_package_identity="f"*64)
+        _, response, raw = self._transport(chain, proposal_record=wrong)
+        with self.assertRaisesRegex(workflow.WorkflowCompositionError, "bound_mr03_package_identity"): self._compose(chain, cloud_response_record=response, raw_provider_response=raw)
 
     def test_disclosure_denial_fails_before_cloud_request_composition(self):
-        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
-        denied = disclosure.build_disclosure(classification="INTERNAL")
-        with self.assertRaises(cloud_boundary.CloudContextAdmissionValidationError):
-            self._compose(chain, disclosure_record=denied)
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain(); denied = disclosure.build_disclosure(classification="INTERNAL")
+        with self.assertRaises(cloud_boundary.CloudContextAdmissionValidationError): self._compose(chain, disclosure_record=denied)
 
     def test_composition_is_repeatable_and_has_zero_execution_authority(self):
-        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
-        first = self._compose(chain)
-        second = self._compose(chain)
-        self.assertEqual(first.final_result.final_result_identity, second.final_result.final_result_identity)
-        self.assertEqual(first.evidence_manifest.manifest_identity, second.evidence_manifest.manifest_identity)
-        for name in (
-            "WORKFLOW_EXECUTION_COUNT",
-            "LIVE_CLOUD_EXECUTION_COUNT",
-            "NETWORK_IMPLEMENTATION_COUNT",
-            "PROVIDER_CLIENT_IMPLEMENTATION_COUNT",
-            "MODEL_CALL_IMPLEMENTATION_COUNT",
-            "MODEL_ROUTING_IMPLEMENTATION_COUNT",
-            "AUTH_IMPLEMENTATION_COUNT",
-            "AUTO_RETRY_IMPLEMENTATION_COUNT",
-            "AUTO_FALLBACK_IMPLEMENTATION_COUNT",
-            "HUMAN_APPROVAL_EXECUTION_COUNT",
-            "HUMAN_DECISION_SIDE_EFFECT_COUNT",
-            "STATE_TRANSITION_EXECUTION_COUNT",
-        ):
-            self.assertEqual(getattr(workflow, name), 0)
-        self.assertEqual(workflow.WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT, 1)
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain(); first = self._compose(chain); second = self._compose(chain)
+        self.assertEqual(first.final_result.final_result_identity, second.final_result.final_result_identity); self.assertEqual(first.evidence_manifest.manifest_identity, second.evidence_manifest.manifest_identity)
+        for name in ("WORKFLOW_EXECUTION_COUNT","LIVE_CLOUD_EXECUTION_COUNT","NETWORK_IMPLEMENTATION_COUNT","PROVIDER_CLIENT_IMPLEMENTATION_COUNT","MODEL_CALL_IMPLEMENTATION_COUNT","MODEL_ROUTING_IMPLEMENTATION_COUNT","AUTH_IMPLEMENTATION_COUNT","AUTO_RETRY_IMPLEMENTATION_COUNT","AUTO_FALLBACK_IMPLEMENTATION_COUNT","HUMAN_APPROVAL_EXECUTION_COUNT","HUMAN_DECISION_SIDE_EFFECT_COUNT","STATE_TRANSITION_EXECUTION_COUNT"): self.assertEqual(getattr(workflow,name),0)
+        self.assertEqual(workflow.WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT,1)
 
     def test_external_discontinuities_are_required_parameters(self):
-        signature = inspect.signature(workflow.compose_top_level_workflow)
-        self.assertIs(signature.parameters["proposal_record"].default, inspect.Parameter.empty)
-        self.assertIs(signature.parameters["human_authorization_reference"].default, inspect.Parameter.empty)
-        self.assertIs(signature.parameters["model_identifier"].default, inspect.Parameter.empty)
-        self.assertIs(signature.parameters["verification_record"].default, inspect.Parameter.empty)
+        signature = inspect.signature(workflow.compose_top_level_workflow); self.assertNotIn("proposal_record",signature.parameters)
+        for name in ("cloud_execution_authorization_record","cloud_response_record","raw_provider_response","human_authorization_reference","model_identifier","verification_record"): self.assertIs(signature.parameters[name].default,inspect.Parameter.empty)
 
 
 if __name__ == "__main__":
