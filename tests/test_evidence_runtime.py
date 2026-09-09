@@ -200,6 +200,20 @@ class EvidenceRuntimeTests(unittest.TestCase):
                     evidence.persist_evidence(approved_root=tmp, relative_path='manifest.json', manifest=manifest)
             self.assertEqual(raised.exception.code, FailureCode.DUPLICATE_CONFLICT.value)
 
+    def test_final_evidence_persistence_result_is_observational_only(self):
+        result = evidence.FinalEvidencePersistenceResult(
+            run_identity='a' * 64, manifest_identity='b' * 64, final_result_identity='c' * 64,
+            approved_root_identity='d' * 64, manifest_relative_path='manifest.json',
+            manifest_content_sha256='e' * 64, manifest_byte_count=10,
+            final_result_relative_path='final.json', final_result_content_sha256='f' * 64, final_result_byte_count=20,
+        )
+        self.assertFalse(result.human_approval)
+        self.assertFalse(result.state_transition_authority)
+        self.assertFalse(result.source_write_authority)
+        self.assertFalse(result.git_authority)
+        self.assertFalse(result.model_provider_authority)
+        self.assertEqual(evidence.FINAL_EVIDENCE_PERSISTENCE_IMPLEMENTATION_COUNT, 1)
+
     def test_operational_counters_are_frozen_zero_outside_evidence_write(self):
         self.assertEqual(evidence.EVIDENCE_PERSISTENCE_COUNT, 1)
         self.assertEqual(evidence.FILESYSTEM_EVIDENCE_WRITE_COUNT, 1)

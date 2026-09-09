@@ -51,6 +51,11 @@ class BoundaryTests(unittest.TestCase):
                         self.assertIn(token, text)
                 self.assertIn('EVIDENCE_PERSISTENCE_COUNT = 1', text)
                 self.assertIn('FILESYSTEM_EVIDENCE_WRITE_COUNT = 1', text)
+                self.assertIn('FINAL_EVIDENCE_PERSISTENCE_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('def persist_final_evidence_records(', text)
+                self.assertIn('def _reject_source_repository_destinations(', text)
+                self.assertIn('os.path.commonpath(', text)
+                self.assertIn('final evidence destination overlaps source repository', text)
                 self.assertIn('AUTO_RETRY_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0', text)
             elif path.name == 'controller.py':

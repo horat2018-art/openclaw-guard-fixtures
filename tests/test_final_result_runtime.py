@@ -1,4 +1,7 @@
 import copy
+import hashlib
+from pathlib import Path
+import tempfile
 import unittest
 
 from hai_mr05 import cloud_boundary, context_builder, disclosure, discovery, evidence, human_gate, identity, metrics, mr03_adapter, mr04_adapter, normalization, proposal, provenance, verifier
@@ -331,6 +334,80 @@ class FinalResultRuntimeTests(unittest.TestCase):
 
     def test_final_result_artifact_is_forbidden_from_pre_final_manifest(self):
         with self.assertRaises(evidence.EvidenceValidationError): evidence.FrozenEvidenceManifest(run_identity="a"*64,artifacts=(evidence.FrozenEvidenceArtifact("final/result.json",1,"b"*64,"mr05.final_result","1.0.0"),))
+
+    def test_final_evidence_records_persist_exact_canonical_bytes_without_authority(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            observed=evidence.persist_final_evidence_records(
+                approved_root=tmp,manifest_relative_path="manifest.json",final_result_relative_path="final.json",
+                manifest=manifest,final_result=final,**self._evidence_args(chain),
+            )
+            manifest_bytes=manifest.canonical_bytes()
+            final_bytes=evidence.canonical_final_result_bytes(final,manifest=manifest,**self._evidence_args(chain))
+            self.assertEqual(Path(tmp,"manifest.json").read_bytes(),manifest_bytes)
+            self.assertEqual(Path(tmp,"final.json").read_bytes(),final_bytes)
+            self.assertEqual(observed.manifest_identity,manifest.manifest_identity)
+            self.assertEqual(observed.final_result_identity,final.final_result_identity)
+            self.assertEqual(observed.manifest_content_sha256,hashlib.sha256(manifest_bytes).hexdigest())
+            self.assertEqual(observed.final_result_content_sha256,hashlib.sha256(final_bytes).hexdigest())
+            self.assertFalse(observed.human_approval or observed.state_transition_authority or observed.source_write_authority or observed.git_authority or observed.model_provider_authority)
+
+    def test_final_evidence_validation_completes_before_any_publication(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        wrong=evidence.FinalResultRecord(
+            run_identity=final.run_identity,terminal_state=final.terminal_state,verification_result=final.verification_result,
+            human_decision_if_any=final.human_decision_if_any,failure_if_any=final.failure_if_any,
+            proposal_identity_if_any=final.proposal_identity_if_any,evidence_manifest_identity='f'*64,
+            metrics_identity=final.metrics_identity,observational_metadata=dict(final.observational_metadata),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(evidence.EvidenceValidationError):
+                evidence.persist_final_evidence_records(
+                    approved_root=tmp,manifest_relative_path="manifest.json",final_result_relative_path="final.json",
+                    manifest=manifest,final_result=wrong,**self._evidence_args(chain),
+                )
+            self.assertEqual(list(Path(tmp).iterdir()),[])
+
+    def test_final_evidence_second_publication_failure_does_not_rollback_manifest(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp,"final.json").write_bytes(b"preserve-final")
+            with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+                evidence.persist_final_evidence_records(
+                    approved_root=tmp,manifest_relative_path="manifest.json",final_result_relative_path="final.json",
+                    manifest=manifest,final_result=final,**self._evidence_args(chain),
+                )
+            self.assertEqual(caught.exception.code,FailureCode.DUPLICATE_CONFLICT.value)
+            self.assertEqual(Path(tmp,"manifest.json").read_bytes(),manifest.canonical_bytes())
+            self.assertEqual(Path(tmp,"final.json").read_bytes(),b"preserve-final")
+
+    def test_final_evidence_paths_must_be_distinct_before_root_validation(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+            evidence.persist_final_evidence_records(
+                approved_root="/definitely/not/inspected",manifest_relative_path="same.json",final_result_relative_path="same.json",
+                manifest=manifest,final_result=final,**self._evidence_args(chain),
+            )
+        self.assertEqual(caught.exception.code,FailureCode.DUPLICATE_CONFLICT.value)
+
+    def test_final_evidence_rejects_source_repository_destinations(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        repository_root=Path(__file__).resolve().parents[1]
+        probe=repository_root/"mr15j-probe"
+        self.assertFalse(probe.exists())
+        cases=(
+            (repository_root,"mr15j-probe/manifest.json","mr15j-probe/final.json"),
+            (repository_root.parent,f"{repository_root.name}/mr15j-probe/manifest.json",f"{repository_root.name}/mr15j-probe/final.json"),
+        )
+        for approved_root,manifest_path,final_path in cases:
+            with self.subTest(approved_root=str(approved_root)):
+                with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+                    evidence.persist_final_evidence_records(
+                        approved_root=str(approved_root),manifest_relative_path=manifest_path,final_result_relative_path=final_path,
+                        manifest=manifest,final_result=final,**self._evidence_args(chain),
+                    )
+                self.assertEqual(caught.exception.code,FailureCode.MR05_INTERNAL_INVARIANT.value)
+                self.assertFalse(probe.exists())
 
     def test_final_result_has_zero_execution_authority(self):
         names=("FINAL_RESULT_EXECUTION_COUNT","FINAL_RESULT_HUMAN_APPROVAL_EXECUTION_COUNT","FINAL_RESULT_STATE_TRANSITION_EXECUTION_COUNT","FINAL_RESULT_NETWORK_IMPLEMENTATION_COUNT","FINAL_RESULT_PROVIDER_CLIENT_IMPLEMENTATION_COUNT","FINAL_RESULT_MODEL_CALL_IMPLEMENTATION_COUNT","FINAL_RESULT_AUTH_IMPLEMENTATION_COUNT","FINAL_RESULT_GIT_OPERATION_COUNT")

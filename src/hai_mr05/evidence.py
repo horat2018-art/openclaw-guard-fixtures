@@ -1,7 +1,7 @@
 """Deterministic immutable evidence persistence boundary for MR-08.
 
 This module implements one bounded local-filesystem persistence surface for
-canonical MR-05 evidence manifests. It performs no subprocess, network,
+canonical MR-05 evidence manifests and qualified final-result records. It performs no subprocess, network,
 provider, model, auth, controller, Human Gate, retry, fallback, Git, commit,
 or push behavior.
 """
@@ -565,6 +565,7 @@ FINAL_RESULT_PROVIDER_CLIENT_IMPLEMENTATION_COUNT = 0
 FINAL_RESULT_MODEL_CALL_IMPLEMENTATION_COUNT = 0
 FINAL_RESULT_AUTH_IMPLEMENTATION_COUNT = 0
 FINAL_RESULT_GIT_OPERATION_COUNT = 0
+FINAL_EVIDENCE_PERSISTENCE_IMPLEMENTATION_COUNT = 1
 _MAX_I64 = 9223372036854775807
 _FROZEN_RUN_STATES = ("RAW","DISCOVERED","NORMALIZED","PACKAGED","GUARDED","CLOUD_READY","PROPOSED","VERIFIED_DENY","VERIFIED_ESCALATE","VERIFIED_PASS_FOR_REVIEW","HUMAN_APPROVED","HUMAN_REJECTED","HUMAN_REWORK","HUMAN_MORE_EVIDENCE","FAILED")
 _FINAL_TERMINAL_STATES = ("VERIFIED_DENY","VERIFIED_ESCALATE","VERIFIED_PASS_FOR_REVIEW","HUMAN_APPROVED","HUMAN_REJECTED","HUMAN_REWORK","HUMAN_MORE_EVIDENCE","FAILED")
@@ -1374,6 +1375,218 @@ def canonical_final_result_bytes(
     return canonical_json_bytes(expected.to_dict(),identity_critical=False)
 
 
+@dataclass(frozen=True, slots=True)
+class FinalEvidencePersistenceResult:
+    """Observed final-evidence publication result; grants no execution authority."""
+
+    run_identity: str
+    manifest_identity: str
+    final_result_identity: str
+    approved_root_identity: str
+    manifest_relative_path: str
+    manifest_content_sha256: str
+    manifest_byte_count: int
+    final_result_relative_path: str
+    final_result_content_sha256: str
+    final_result_byte_count: int
+    human_approval: bool = False
+    state_transition_authority: bool = False
+    source_write_authority: bool = False
+    git_authority: bool = False
+    model_provider_authority: bool = False
+
+
+def _source_repository_root() -> str | None:
+    """Return the frozen source-repository root for the src/hai_mr05 layout."""
+
+    module_dir = os.path.dirname(os.path.realpath(__file__))
+    src_dir = os.path.dirname(module_dir)
+    if os.path.basename(module_dir) != "hai_mr05" or os.path.basename(src_dir) != "src":
+        return None
+    return os.path.dirname(src_dir)
+
+
+def _reject_source_repository_destinations(*, approved_root: str, relative_paths: Sequence[str]) -> None:
+    """Fail closed when a final-evidence destination overlaps the source repository."""
+
+    repository_root = _source_repository_root()
+    if repository_root is None:
+        return
+    for relative_path in relative_paths:
+        destination = os.path.normpath(os.path.join(approved_root, *relative_path.split("/")))
+        try:
+            overlaps_repository = os.path.commonpath((repository_root, destination)) == repository_root
+        except ValueError:
+            overlaps_repository = False
+        if overlaps_repository:
+            _fail(
+                FailureCode.MR05_INTERNAL_INVARIANT,
+                "final evidence destination overlaps source repository",
+            )
+
+
+def _publish_final_evidence_bytes(
+    *,
+    root_fd: int,
+    relative_path: str,
+    canonical: bytes,
+    temp_name: str,
+) -> tuple[str, int]:
+    """Publish one already-qualified byte record under one validated root fd."""
+
+    parent_fd = root_fd
+    opened_dirs: list[int] = []
+    temp_fd: int | None = None
+    try:
+        parts = relative_path.split("/")
+        for part in parts[:-1]:
+            child_fd = _open_directory(parent_fd, part)
+            opened_dirs.append(child_fd)
+            parent_fd = child_fd
+        final_name = parts[-1]
+        _destination_absent(parent_fd, final_name)
+        try:
+            temp_fd = os.open(temp_name, _temp_flags(), 0o600, dir_fd=parent_fd)
+        except FileExistsError:
+            _fail(FailureCode.DUPLICATE_CONFLICT, "exclusive temporary final-evidence object already exists")
+        except OSError as exc:
+            if exc.errno == errno.EEXIST:
+                _fail(FailureCode.DUPLICATE_CONFLICT, "exclusive temporary final-evidence object already exists")
+            _fail(FailureCode.MR05_INTERNAL_INVARIANT, f"temporary final-evidence creation failed: {exc}")
+        temp_before = os.fstat(temp_fd)
+        if not stat.S_ISREG(temp_before.st_mode):
+            _fail(FailureCode.MR05_INTERNAL_INVARIANT, "temporary final-evidence object is not a regular file")
+        _write_exact(temp_fd, canonical)
+        temp_after_write = os.fstat(temp_fd)
+        if temp_after_write.st_size != len(canonical):
+            _fail(FailureCode.HASH_MISMATCH, "temporary final-evidence byte count mismatch")
+        try:
+            os.fsync(temp_fd)
+        except OSError as exc:
+            _fail(FailureCode.MR05_INTERNAL_INVARIANT, f"temporary final-evidence fsync failed: {exc}")
+        _verify_temp_bytes(temp_fd, canonical)
+        _publish_no_replace(parent_fd, temp_name, final_name)
+        try:
+            os.fsync(parent_fd)
+        except OSError as exc:
+            _fail(FailureCode.MR05_INTERNAL_INVARIANT, f"final-evidence directory fsync after publication failed: {exc}")
+        try:
+            final_info = os.stat(final_name, dir_fd=parent_fd, follow_symlinks=False)
+            temp_info = os.fstat(temp_fd)
+        except OSError as exc:
+            _fail(FailureCode.MR05_INTERNAL_INVARIANT, f"final-evidence identity verification failed: {exc}")
+        if stat.S_ISLNK(final_info.st_mode) or not stat.S_ISREG(final_info.st_mode):
+            _fail(FailureCode.HASH_MISMATCH, "final-evidence object is not the published regular file")
+        if (final_info.st_dev, final_info.st_ino) != (temp_info.st_dev, temp_info.st_ino):
+            _fail(FailureCode.HASH_MISMATCH, "final-evidence identity differs from verified temporary object")
+        if final_info.st_size != len(canonical):
+            _fail(FailureCode.HASH_MISMATCH, "final-evidence byte count mismatch")
+        try:
+            os.unlink(temp_name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except OSError as exc:
+            _fail(FailureCode.MR05_INTERNAL_INVARIANT, f"successful final-evidence temporary-link cleanup failed: {exc}")
+        return hashlib.sha256(canonical).hexdigest(), len(canonical)
+    finally:
+        if temp_fd is not None:
+            os.close(temp_fd)
+        for fd in reversed(opened_dirs):
+            os.close(fd)
+
+
+def persist_final_evidence_records(
+    *,
+    approved_root: object,
+    manifest_relative_path: object,
+    final_result_relative_path: object,
+    manifest: FrozenEvidenceManifest | Mapping[str, object],
+    final_result: FinalResultRecord | Mapping[str, object],
+    run_record: object,
+    bounded_context_record: object,
+    disclosure_record: object,
+    cloud_context_record: object,
+    cloud_request_record: object,
+    metrics_record: object,
+    proposal_record: object,
+    verification_record: object,
+    legacy_verifier_result: object,
+    verifier_failure_records: object = (),
+    human_gate_record: object = None,
+    human_decision_record: object = None,
+    failure_record: object = None,
+) -> FinalEvidencePersistenceResult:
+    """Persist qualified pre-final manifest then Final Result under one explicit root.
+
+    Both records and all canonical bytes are qualified before filesystem publication.
+    Publication is create-once/no-replace. If the manifest is published and the Final
+    Result later fails, no rollback, retry, fallback, or automatic cleanup is attempted.
+    """
+
+    qualified_manifest = _qualified_frozen_manifest(manifest)
+    qualified_final = (
+        FinalResultRecord.from_mapping(final_result.to_dict())
+        if isinstance(final_result, FinalResultRecord)
+        else FinalResultRecord.from_mapping(final_result)
+    )
+    manifest_path = _relative_path(manifest_relative_path)
+    final_path = _relative_path(final_result_relative_path)
+    if manifest_path == final_path:
+        _fail(FailureCode.DUPLICATE_CONFLICT, "manifest and final-result relative paths must be distinct")
+    manifest_bytes = qualified_manifest.canonical_bytes()
+    final_bytes = canonical_final_result_bytes(
+        qualified_final,
+        run_record=run_record,
+        manifest=qualified_manifest,
+        bounded_context_record=bounded_context_record,
+        disclosure_record=disclosure_record,
+        cloud_context_record=cloud_context_record,
+        cloud_request_record=cloud_request_record,
+        metrics_record=metrics_record,
+        proposal_record=proposal_record,
+        verification_record=verification_record,
+        legacy_verifier_result=legacy_verifier_result,
+        verifier_failure_records=verifier_failure_records,
+        human_gate_record=human_gate_record,
+        human_decision_record=human_decision_record,
+        failure_record=failure_record,
+    )
+    if qualified_final.evidence_manifest_identity != qualified_manifest.manifest_identity:
+        raise EvidenceValidationError("Final Result is not bound to the exact pre-final manifest")
+
+    root = _validated_root(approved_root)
+    _reject_source_repository_destinations(
+        approved_root=root.path, relative_paths=(manifest_path, final_path)
+    )
+    root_identity = approved_root_identity(root.path)
+    root_fd: int | None = None
+    try:
+        try:
+            root_fd = os.open(root.path, _directory_flags())
+        except OSError as exc:
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, f"approved_root open failed closed: {exc}")
+        opened_root = os.fstat(root_fd)
+        if not stat.S_ISDIR(opened_root.st_mode) or _state_tuple(opened_root) != root.state:
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, "approved_root substitution detected after validation")
+        manifest_sha, manifest_count = _publish_final_evidence_bytes(
+            root_fd=root_fd, relative_path=manifest_path, canonical=manifest_bytes,
+            temp_name=f".mr15j-manifest-{qualified_manifest.manifest_identity}.tmp",
+        )
+        final_sha, final_count = _publish_final_evidence_bytes(
+            root_fd=root_fd, relative_path=final_path, canonical=final_bytes,
+            temp_name=f".mr15j-final-{qualified_final.final_result_identity}.tmp",
+        )
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+
+    return FinalEvidencePersistenceResult(
+        run_identity=qualified_manifest.run_identity, manifest_identity=qualified_manifest.manifest_identity,
+        final_result_identity=qualified_final.final_result_identity, approved_root_identity=root_identity,
+        manifest_relative_path=manifest_path, manifest_content_sha256=manifest_sha, manifest_byte_count=manifest_count,
+        final_result_relative_path=final_path, final_result_content_sha256=final_sha, final_result_byte_count=final_count,
+    )
+
+
 __all__ = (
     "RUN_POLICY_VERSION", "EVIDENCE_POLICY_VERSION", "EVIDENCE_PERSISTENCE_COUNT",
     "FILESYSTEM_EVIDENCE_WRITE_COUNT", "SUBPROCESS_EXECUTION_COUNT",
@@ -1389,7 +1602,9 @@ __all__ = (
     "FINAL_RESULT_HUMAN_APPROVAL_EXECUTION_COUNT", "FINAL_RESULT_STATE_TRANSITION_EXECUTION_COUNT",
     "FINAL_RESULT_NETWORK_IMPLEMENTATION_COUNT", "FINAL_RESULT_PROVIDER_CLIENT_IMPLEMENTATION_COUNT",
     "FINAL_RESULT_MODEL_CALL_IMPLEMENTATION_COUNT", "FINAL_RESULT_AUTH_IMPLEMENTATION_COUNT",
-    "FINAL_RESULT_GIT_OPERATION_COUNT", "FrozenRunRecord", "FrozenEvidenceArtifact",
+    "FINAL_RESULT_GIT_OPERATION_COUNT", "FINAL_EVIDENCE_PERSISTENCE_IMPLEMENTATION_COUNT",
+    "FrozenRunRecord", "FrozenEvidenceArtifact",
     "FrozenEvidenceManifest", "FinalResultRecord", "build_frozen_run_record",
     "build_pre_final_evidence_manifest", "build_final_result", "canonical_final_result_bytes",
+    "FinalEvidencePersistenceResult", "persist_final_evidence_records",
 )
