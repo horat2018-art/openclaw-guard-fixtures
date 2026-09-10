@@ -1,6 +1,7 @@
 """Pure-data composition of the qualified deterministic HAI MR-05 workflow.
 
-This module binds already-qualified local records. It does not execute a provider,
+This module binds already-qualified local records and delegates final-evidence
+publication to the qualified evidence boundary. It does not execute a provider,
 model, Human decision, state transition, retry, fallback, or other external action.
 """
 
@@ -63,6 +64,7 @@ class WorkflowCompositionResult:
     human_decision_record: human_gate.HumanDecisionRecord | None
     evidence_manifest: evidence.FrozenEvidenceManifest
     final_result: evidence.FinalResultRecord
+    final_evidence_persistence_result: evidence.FinalEvidencePersistenceResult
 
 
 def _qualified_frozen_run(value: object) -> evidence.FrozenRunRecord:
@@ -213,6 +215,9 @@ def compose_top_level_workflow(
     raw_provider_response: bytes,
     legacy_verifier_result: object,
     verification_record: object,
+    approved_root: object,
+    manifest_relative_path: object,
+    final_result_relative_path: object,
     verifier_failure_records: object = (),
     human_gate_record: object | None = None,
     human_decision_record: object | None = None,
@@ -226,8 +231,10 @@ def compose_top_level_workflow(
     """Compose supplied deterministic records without executing external authority.
 
     Cloud execution authorization, provider response data, raw provider-response
-    bytes, and Human Decision data are explicit discontinuity inputs. The function
-    never executes a model/provider call and never makes a Human decision. A supplied
+    bytes, Human Decision data, and final-evidence destination data are explicit
+    discontinuity inputs. The function never executes a model/provider call and never
+    makes a Human decision. Final-evidence publication is delegated exactly once to the
+    qualified evidence persistence boundary. A supplied
     run must be the authoritative FrozenRunRecord shape; the
     legacy controller RunRecord is intentionally not bridged or coerced.
     """
@@ -307,6 +314,14 @@ def compose_top_level_workflow(
         **evidence_args,
         observational_metadata=final_observational_metadata,
     )
+    persistence_result = evidence.persist_final_evidence_records(
+        approved_root=approved_root,
+        manifest_relative_path=manifest_relative_path,
+        final_result_relative_path=final_result_relative_path,
+        manifest=manifest,
+        final_result=final_result,
+        **evidence_args,
+    )
     return WorkflowCompositionResult(
         run_record=run,
         cloud_context_record=context,
@@ -319,6 +334,7 @@ def compose_top_level_workflow(
         human_decision_record=decision,
         evidence_manifest=manifest,
         final_result=final_result,
+        final_evidence_persistence_result=persistence_result,
     )
 
 

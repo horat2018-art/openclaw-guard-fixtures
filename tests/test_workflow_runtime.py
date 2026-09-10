@@ -1,5 +1,8 @@
 import inspect
+from pathlib import Path
+import tempfile
 import unittest
+from unittest import mock
 
 from hai_mr05 import cloud_boundary, disclosure, evidence, failures, proposal, workflow
 try:
@@ -39,12 +42,18 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "cloud_execution_authorization_record": authorization,
             "cloud_response_record": response, "raw_provider_response": raw,
             "legacy_verifier_result": chain["legacy"], "verification_record": chain["verification"],
+            "manifest_relative_path": "manifest.json", "final_result_relative_path": "final.json",
             "verifier_failure_records": chain["verifier_failures"],
             "human_gate_record": chain["gate"], "human_decision_record": chain["decision"],
             "failure_record": chain["failure"],
         }
-        args.update(overrides)
-        return workflow.compose_top_level_workflow(**args)
+        if "approved_root" in overrides:
+            args.update(overrides)
+            return workflow.compose_top_level_workflow(**args)
+        with tempfile.TemporaryDirectory() as tmp:
+            args["approved_root"] = tmp
+            args.update(overrides)
+            return workflow.compose_top_level_workflow(**args)
 
     def test_exact_pass_chain_admits_transport_and_matches_authoritative_final_chain(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
@@ -62,6 +71,43 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(artifacts["cloud/response.raw.json"].artifact_type, "mr05.cloud_proposal")
         self.assertEqual(artifacts["cloud/response.raw.json"].sha256, composed.cloud_response_record.raw_response_sha256)
         self.assertEqual(artifacts["cloud/response.raw.json"].byte_size, composed.cloud_response_record.raw_response_size_bytes)
+
+    def test_final_evidence_persistence_is_exact_single_delegation_and_observational_only(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        calls = []
+        original = evidence.persist_final_evidence_records
+
+        def capture(**kwargs):
+            calls.append(kwargs)
+            return original(**kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "records").mkdir()
+            with mock.patch.object(evidence, "persist_final_evidence_records", side_effect=capture) as delegated:
+                composed = self._compose(
+                    chain, approved_root=tmp,
+                    manifest_relative_path="records/manifest.json",
+                    final_result_relative_path="records/final.json",
+                )
+            delegated.assert_called_once()
+            self.assertEqual(len(calls), 1)
+            self.assertIs(calls[0]["manifest"], composed.evidence_manifest)
+            self.assertIs(calls[0]["final_result"], composed.final_result)
+            observed = composed.final_evidence_persistence_result
+            self.assertIsInstance(observed, evidence.FinalEvidencePersistenceResult)
+            self.assertEqual(observed.manifest_identity, composed.evidence_manifest.manifest_identity)
+            self.assertEqual(observed.final_result_identity, composed.final_result.final_result_identity)
+            self.assertEqual(Path(tmp, "records/manifest.json").read_bytes(), composed.evidence_manifest.canonical_bytes())
+            final_bytes = evidence.canonical_final_result_bytes(
+                composed.final_result, manifest=composed.evidence_manifest,
+                **_final_fixture_module.FinalResultRuntimeTests._evidence_args(chain),
+            )
+            self.assertEqual(Path(tmp, "records/final.json").read_bytes(), final_bytes)
+            self.assertFalse(
+                observed.human_approval or observed.state_transition_authority
+                or observed.source_write_authority or observed.git_authority
+                or observed.model_provider_authority
+            )
 
     def test_human_approved_chain_consumes_only_explicit_supplied_decision(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
@@ -136,7 +182,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
 
     def test_external_discontinuities_are_required_parameters(self):
         signature = inspect.signature(workflow.compose_top_level_workflow); self.assertNotIn("proposal_record",signature.parameters)
-        for name in ("cloud_execution_authorization_record","cloud_response_record","raw_provider_response","human_authorization_reference","model_identifier","verification_record"): self.assertIs(signature.parameters[name].default,inspect.Parameter.empty)
+        for name in ("cloud_execution_authorization_record","cloud_response_record","raw_provider_response","human_authorization_reference","model_identifier","verification_record","approved_root","manifest_relative_path","final_result_relative_path"): self.assertIs(signature.parameters[name].default,inspect.Parameter.empty)
 
 
 if __name__ == "__main__":
