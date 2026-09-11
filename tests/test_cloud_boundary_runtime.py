@@ -987,6 +987,158 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
                 failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value,
             )
 
+    def test_governed_external_transport_adapter_admits_one_exact_external_result(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://mr15n/r0",
+        )
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        raw = b'{"proposal":"governed-external-result"}'
+        response = cloud_boundary.adapt_governed_external_transport_response(
+            request,
+            authorization,
+            raw_provider_response=raw,
+            provider_identifier="provider-a",
+            actual_model_identifier="model-a",
+            provider_request_id="provider-request-mr15n",
+            account_boundary_reference="account://boundary-a",
+            provider_usage_if_available={"input_tokens": 12, "output_tokens": 7},
+        )
+        self.assertIsInstance(response, cloud_boundary.CloudResponse)
+        self.assertEqual(response.request_identity, request.request_identity)
+        self.assertEqual(response.attempt_number, 1)
+        self.assertEqual(response.raw_response_sha256, identity.sha256_bytes(raw))
+        self.assertEqual(response.raw_response_size_bytes, len(raw))
+        self.assertEqual(response.provider_identifier, authorization.provider_identifier)
+        self.assertEqual(response.actual_model_identifier, request.model_identifier)
+        self.assertEqual(
+            response.account_boundary_reference,
+            authorization.account_boundary_reference,
+        )
+        self.assertIsNone(response.error_metadata)
+        self.assertIs(
+            cloud_boundary.validate_cloud_response_binding(
+                response, request, authorization
+            ),
+            response,
+        )
+        self.assertEqual(
+            cloud_boundary.GOVERNED_EXTERNAL_TRANSPORT_ADAPTER_IMPLEMENTATION_COUNT,
+            1,
+        )
+        self.assertEqual(cloud_boundary.EXTERNAL_TRANSPORT_EXECUTION_COUNT, 0)
+
+    def test_governed_external_transport_adapter_fails_closed_on_unbound_or_error_result(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://mr15n/r0",
+        )
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        base = {
+            "raw_provider_response": b'{"proposal":"governed-external-result"}',
+            "provider_identifier": "provider-a",
+            "actual_model_identifier": "model-a",
+            "provider_request_id": "provider-request-mr15n",
+            "account_boundary_reference": "account://boundary-a",
+            "provider_usage_if_available": None,
+            "error_metadata": None,
+        }
+        mutations = (
+            ("provider_identifier", "provider-b"),
+            ("actual_model_identifier", "model-b"),
+            ("account_boundary_reference", "account://boundary-b"),
+            ("error_metadata", {"provider_error": "denied"}),
+        )
+        for field, value in mutations:
+            kwargs = dict(base)
+            kwargs[field] = value
+            with self.subTest(field=field), self.assertRaises(
+                cloud_boundary.CloudResponseValidationError
+            ) as caught:
+                cloud_boundary.adapt_governed_external_transport_response(
+                    request,
+                    authorization,
+                    **kwargs,
+                )
+            self.assertEqual(
+                caught.exception.failure_code,
+                failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value,
+            )
+
+        bad_bytes = dict(base)
+        bad_bytes["raw_provider_response"] = bytearray(base["raw_provider_response"])
+        with self.assertRaises(cloud_boundary.CloudResponseValidationError) as caught:
+            cloud_boundary.adapt_governed_external_transport_response(
+                request,
+                authorization,
+                **bad_bytes,
+            )
+        self.assertEqual(
+            caught.exception.failure_code,
+            failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value,
+        )
+
+    def test_governed_external_transport_adapter_has_no_executor_or_secret_surface(self):
+        parameters = tuple(
+            inspect.signature(
+                cloud_boundary.adapt_governed_external_transport_response
+            ).parameters
+        )
+        self.assertEqual(
+            parameters,
+            (
+                "cloud_request",
+                "authorization",
+                "raw_provider_response",
+                "provider_identifier",
+                "actual_model_identifier",
+                "provider_request_id",
+                "account_boundary_reference",
+                "provider_usage_if_available",
+                "error_metadata",
+            ),
+        )
+        for forbidden_fragment in (
+            "callback",
+            "client",
+            "executor",
+            "api_key",
+            "token",
+            "secret",
+            "credential",
+            "retry",
+            "fallback",
+        ):
+            with self.subTest(forbidden_fragment=forbidden_fragment):
+                self.assertFalse(
+                    any(forbidden_fragment in name.lower() for name in parameters)
+                )
+        self.assertEqual(cloud_boundary.EXTERNAL_TRANSPORT_EXECUTION_COUNT, 0)
+        for name in (
+            "NETWORK_IMPLEMENTATION_COUNT",
+            "PROVIDER_CLIENT_IMPLEMENTATION_COUNT",
+            "MODEL_CALL_IMPLEMENTATION_COUNT",
+            "MODEL_ROUTING_IMPLEMENTATION_COUNT",
+            "AUTH_IMPLEMENTATION_COUNT",
+            "AUTO_RETRY_IMPLEMENTATION_COUNT",
+            "AUTO_FALLBACK_IMPLEMENTATION_COUNT",
+            "LIVE_CLOUD_EXECUTION_COUNT",
+        ):
+            with self.subTest(counter=name):
+                self.assertEqual(getattr(cloud_boundary, name), 0)
+
     def test_request_builder_has_no_live_execution_or_retry_authority(self):
         context = self._admit(self._context_package())
         request = cloud_boundary.build_cloud_request(
@@ -1022,6 +1174,7 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             "AUTH_IMPLEMENTATION_COUNT",
             "AUTO_RETRY_IMPLEMENTATION_COUNT",
             "AUTO_FALLBACK_IMPLEMENTATION_COUNT",
+            "EXTERNAL_TRANSPORT_EXECUTION_COUNT",
             "STATE_TRANSITION_EXECUTION_COUNT",
             "GIT_OPERATION_COUNT",
             "SOURCE_ACQUISITION_IMPLEMENTATION_COUNT",

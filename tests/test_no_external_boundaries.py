@@ -101,8 +101,11 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('CLOUD_EXECUTION_AUTHORIZATION_BUILD_COUNT = 1', text)
                 self.assertIn('CLOUD_RESPONSE_RECORD_BUILD_COUNT = 1', text)
                 self.assertIn('CLOUD_RESPONSE_BINDING_VALIDATION_COUNT = 1', text)
+                self.assertIn('GOVERNED_EXTERNAL_TRANSPORT_ADAPTER_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('EXTERNAL_TRANSPORT_EXECUTION_COUNT = 0', text)
                 self.assertIn('class CloudExecutionAuthorization:', text)
                 self.assertIn('class CloudResponse:', text)
+                self.assertIn('def adapt_governed_external_transport_response(', text)
                 for name in (
                     'FILESYSTEM_SOURCE_READ_COUNT = 0',
                     'FILESYSTEM_WRITE_IMPLEMENTATION_COUNT = 0',
@@ -114,6 +117,7 @@ class BoundaryTests(unittest.TestCase):
                     'AUTH_IMPLEMENTATION_COUNT = 0',
                     'AUTO_RETRY_IMPLEMENTATION_COUNT = 0',
                     'AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0',
+                    'EXTERNAL_TRANSPORT_EXECUTION_COUNT = 0',
                     'STATE_TRANSITION_EXECUTION_COUNT = 0',
                     'GIT_OPERATION_COUNT = 0',
                     'SOURCE_ACQUISITION_IMPLEMENTATION_COUNT = 0',

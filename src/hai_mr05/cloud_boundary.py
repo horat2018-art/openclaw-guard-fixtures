@@ -69,6 +69,8 @@ CLOUD_REQUEST_BUILD_COUNT = 1
 CLOUD_EXECUTION_AUTHORIZATION_BUILD_COUNT = 1
 CLOUD_RESPONSE_RECORD_BUILD_COUNT = 1
 CLOUD_RESPONSE_BINDING_VALIDATION_COUNT = 1
+GOVERNED_EXTERNAL_TRANSPORT_ADAPTER_IMPLEMENTATION_COUNT = 1
+EXTERNAL_TRANSPORT_EXECUTION_COUNT = 0
 LIVE_CLOUD_EXECUTION_COUNT = 0
 CONTEXT_REPACK_IMPLEMENTATION_COUNT = 0
 PARTIAL_CONTEXT_TRUNCATION_IMPLEMENTATION_COUNT = 0
@@ -1566,6 +1568,48 @@ def validate_cloud_response_binding(
     return record
 
 
+def adapt_governed_external_transport_response(
+    cloud_request: CloudRequest | Mapping[str, object],
+    authorization: CloudExecutionAuthorization | Mapping[str, object],
+    *,
+    raw_provider_response: bytes,
+    provider_identifier: object,
+    actual_model_identifier: object,
+    provider_request_id: object,
+    account_boundary_reference: object,
+    provider_usage_if_available: Mapping[str, object] | None = None,
+    error_metadata: Mapping[str, object] | None = None,
+) -> CloudResponse:
+    """Admit one externally obtained transport result without executing transport.
+
+    The caller owns all external I/O and authentication.  This adapter accepts only
+    already-returned immutable response bytes plus non-secret transport metadata,
+    revalidates the exact request/authorization binding, builds the frozen response
+    record, and fails closed on provider/model/account/attempt/error mismatches.  It
+    has no network, provider-client, model-call, credential, retry, fallback, routing,
+    workflow, state-transition, filesystem, subprocess, or Git authority.
+    """
+
+    request = (
+        cloud_request
+        if isinstance(cloud_request, CloudRequest)
+        else CloudRequest.from_mapping(cloud_request)
+    )
+    authorized = validate_cloud_execution_authorization(authorization, request)
+    response = build_cloud_response_record(
+        request,
+        authorized,
+        raw_provider_response=raw_provider_response,
+        provider_identifier=provider_identifier,
+        actual_model_identifier=actual_model_identifier,
+        provider_request_id=provider_request_id,
+        account_boundary_reference=account_boundary_reference,
+        provider_usage_if_available=provider_usage_if_available,
+        error_metadata=error_metadata,
+    )
+    return validate_cloud_response_binding(response, request, authorized)
+
+
 def not_implemented(*args: object, **kwargs: object) -> None:
     """Retain the legacy non-operational marker for direct callers."""
 
@@ -1610,6 +1654,8 @@ __all__ = (
     "CLOUD_EXECUTION_AUTHORIZATION_BUILD_COUNT",
     "CLOUD_RESPONSE_RECORD_BUILD_COUNT",
     "CLOUD_RESPONSE_BINDING_VALIDATION_COUNT",
+    "GOVERNED_EXTERNAL_TRANSPORT_ADAPTER_IMPLEMENTATION_COUNT",
+    "EXTERNAL_TRANSPORT_EXECUTION_COUNT",
     "LIVE_CLOUD_EXECUTION_COUNT",
     "CONTEXT_REPACK_IMPLEMENTATION_COUNT",
     "PARTIAL_CONTEXT_TRUNCATION_IMPLEMENTATION_COUNT",
@@ -1641,5 +1687,6 @@ __all__ = (
     "compute_cloud_response_identity",
     "canonical_cloud_response_bytes",
     "validate_cloud_response_binding",
+    "adapt_governed_external_transport_response",
     "not_implemented",
 )
