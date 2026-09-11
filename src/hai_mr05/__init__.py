@@ -1,6 +1,6 @@
 """HAI MR-05 qualified deterministic runtime package.
 
-Qualified deterministic runtime surfaces are implemented through HAI-MR-15L-R2.
+Qualified deterministic runtime surfaces are implemented through HAI-MR-15N-R2B.
 Live and production external execution remain unavailable; the CLI remains intentionally fail-closed.
 """
 
