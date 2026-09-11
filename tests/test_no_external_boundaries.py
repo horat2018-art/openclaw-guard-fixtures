@@ -192,7 +192,12 @@ class BoundaryTests(unittest.TestCase):
                         self.assertNotIn(token, text)
                 self.assertIn('WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('cloud_boundary.validate_cloud_execution_authorization(', text)
-                self.assertIn('cloud_boundary.validate_cloud_response_binding(', text)
+                self.assertEqual(
+                    text.count('cloud_boundary.adapt_governed_external_transport_response('),
+                    1,
+                )
+                self.assertNotIn('cloud_boundary.validate_cloud_response_binding(', text)
+                self.assertNotIn('cloud_boundary.build_cloud_response_record(', text)
                 self.assertIn('proposal.admit_cloud_response_proposal(', text)
                 self.assertEqual(text.count('evidence.persist_final_evidence_records('), 1)
                 self.assertIn('final_evidence_persistence_result: evidence.FinalEvidencePersistenceResult', text)

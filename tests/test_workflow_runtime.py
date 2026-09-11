@@ -21,18 +21,23 @@ class WorkflowRuntimeTests(unittest.TestCase):
             account_boundary_reference="account://workflow-fixture",
         )
         metadata = proposal_record.proposer_metadata
-        response = cloud_boundary.build_cloud_response_record(
-            chain["cloud_request"], authorization, raw_provider_response=raw,
-            provider_identifier="provider-fixture", actual_model_identifier=metadata.model_identifier,
-            provider_request_id=metadata.provider_request_id,
-            account_boundary_reference="account://workflow-fixture",
-            provider_usage_if_available=None if metadata.usage_if_available is None else dict(metadata.usage_if_available),
-        )
-        return authorization, response, raw
+        transport_metadata = {
+            "provider_identifier": "provider-fixture",
+            "actual_model_identifier": metadata.model_identifier,
+            "provider_request_id": metadata.provider_request_id,
+            "account_boundary_reference": "account://workflow-fixture",
+            "provider_usage_if_available": (
+                None
+                if metadata.usage_if_available is None
+                else dict(metadata.usage_if_available)
+            ),
+            "error_metadata": None,
+        }
+        return authorization, raw, transport_metadata
 
     @staticmethod
     def _compose(chain, **overrides):
-        authorization, response, raw = WorkflowRuntimeTests._transport(chain)
+        authorization, raw, transport_metadata = WorkflowRuntimeTests._transport(chain)
         args = {
             "run_record": chain["run"], "bounded_context_record": chain["bounded_context"],
             "disclosure_record": chain["disclosure"], "metrics_record": chain["metric"],
@@ -40,7 +45,8 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "human_authorization_reference": "human-auth:final-result-fixture",
             "estimated_token_metadata": _final_fixture_module.FinalResultRuntimeTests._token_metadata(),
             "cloud_execution_authorization_record": authorization,
-            "cloud_response_record": response, "raw_provider_response": raw,
+            "raw_provider_response": raw,
+            **transport_metadata,
             "legacy_verifier_result": chain["legacy"], "verification_record": chain["verification"],
             "manifest_relative_path": "manifest.json", "final_result_relative_path": "final.json",
             "verifier_failure_records": chain["verifier_failures"],
@@ -71,6 +77,18 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(artifacts["cloud/response.raw.json"].artifact_type, "mr05.cloud_proposal")
         self.assertEqual(artifacts["cloud/response.raw.json"].sha256, composed.cloud_response_record.raw_response_sha256)
         self.assertEqual(artifacts["cloud/response.raw.json"].byte_size, composed.cloud_response_record.raw_response_size_bytes)
+
+    def test_governed_external_transport_adapter_is_exact_single_delegation(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        original = cloud_boundary.adapt_governed_external_transport_response
+        with mock.patch.object(
+            cloud_boundary,
+            "adapt_governed_external_transport_response",
+            side_effect=original,
+        ) as delegated:
+            composed = self._compose(chain)
+        delegated.assert_called_once()
+        self.assertEqual(composed.proposal_record, chain["proposal"])
 
     def test_final_evidence_persistence_is_exact_single_delegation_and_observational_only(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
@@ -134,8 +152,16 @@ class WorkflowRuntimeTests(unittest.TestCase):
     def test_raw_proposal_request_binding_mismatch_preserves_admission_failure(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
         wrong = _final_fixture_module.FinalResultRuntimeTests._proposal_with(chain["proposal"], request_identity="f"*64)
-        _, response, raw = self._transport(chain, proposal_record=wrong)
-        with self.assertRaises(proposal.ProposalValidationError) as caught: self._compose(chain, cloud_response_record=response, raw_provider_response=raw)
+        authorization, raw, transport_metadata = self._transport(
+            chain, proposal_record=wrong
+        )
+        with self.assertRaises(proposal.ProposalValidationError) as caught:
+            self._compose(
+                chain,
+                cloud_execution_authorization_record=authorization,
+                raw_provider_response=raw,
+                **transport_metadata,
+            )
         self.assertEqual(caught.exception.failure_code, failures.FailureCode.PROPOSAL_PACKAGE_BINDING_MISMATCH.value)
 
     def test_execution_authorization_mismatch_preserves_unauthorized_failure(self):
@@ -145,30 +171,67 @@ class WorkflowRuntimeTests(unittest.TestCase):
         with self.assertRaises(cloud_boundary.CloudExecutionAuthorizationValidationError) as caught: self._compose(chain, cloud_execution_authorization_record=wrong)
         self.assertEqual(caught.exception.failure_code, failures.FailureCode.MR05_MODEL_UNAUTHORIZED.value)
 
-    def test_response_binding_mismatch_preserves_provider_error(self):
+    def test_governed_transport_binding_mismatches_preserve_provider_error(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
-        authorization, _, raw = self._transport(chain); metadata = chain["proposal"].proposer_metadata
-        wrong = cloud_boundary.build_cloud_response_record(chain["cloud_request"], authorization, raw_provider_response=raw, provider_identifier="provider-other", actual_model_identifier=metadata.model_identifier, provider_request_id=metadata.provider_request_id, account_boundary_reference="account://workflow-fixture", provider_usage_if_available=dict(metadata.usage_if_available))
-        with self.assertRaises(cloud_boundary.CloudResponseValidationError) as caught: self._compose(chain, cloud_response_record=wrong)
-        self.assertEqual(caught.exception.failure_code, failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value)
+        mutations = (
+            ("provider_identifier", "provider-other"),
+            ("actual_model_identifier", "openai/gpt-other"),
+            ("account_boundary_reference", "account://workflow-other"),
+            ("error_metadata", {"provider_error": "denied"}),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field), self.assertRaises(
+                cloud_boundary.CloudResponseValidationError
+            ) as caught:
+                self._compose(chain, **{field: value})
+            self.assertEqual(
+                caught.exception.failure_code,
+                failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value,
+            )
 
-    def test_raw_response_byte_mismatch_preserves_provider_error(self):
+    def test_invalid_provider_bytes_fail_closed(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
-        with self.assertRaises(proposal.ProposalValidationError) as caught: self._compose(chain, raw_provider_response=proposal.canonical_cloud_proposal_bytes(chain["proposal"])+b" ")
-        self.assertEqual(caught.exception.failure_code, failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value)
+        raw = proposal.canonical_cloud_proposal_bytes(chain["proposal"])
+        with self.assertRaises(cloud_boundary.CloudResponseValidationError) as caught:
+            self._compose(chain, raw_provider_response=bytearray(raw))
+        self.assertEqual(
+            caught.exception.failure_code,
+            failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value,
+        )
+        with self.assertRaises(proposal.ProposalValidationError):
+            self._compose(chain, raw_provider_response=b"{not-valid-json")
 
     def test_transport_metadata_mismatch_preserves_proposal_binding_failure(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
-        authorization, _, raw = self._transport(chain); metadata = chain["proposal"].proposer_metadata
-        response = cloud_boundary.build_cloud_response_record(chain["cloud_request"], authorization, raw_provider_response=raw, provider_identifier="provider-fixture", actual_model_identifier=metadata.model_identifier, provider_request_id="provider-request-other", account_boundary_reference="account://workflow-fixture", provider_usage_if_available=dict(metadata.usage_if_available))
-        with self.assertRaises(proposal.ProposalValidationError) as caught: self._compose(chain, cloud_response_record=response)
-        self.assertEqual(caught.exception.failure_code, failures.FailureCode.PROPOSAL_PACKAGE_BINDING_MISMATCH.value)
+        mutations = (
+            ("provider_request_id", "provider-request-other"),
+            ("provider_usage_if_available", {"input_tokens": 999}),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field), self.assertRaises(
+                proposal.ProposalValidationError
+            ) as caught:
+                self._compose(chain, **{field: value})
+            self.assertEqual(
+                caught.exception.failure_code,
+                failures.FailureCode.PROPOSAL_PACKAGE_BINDING_MISMATCH.value,
+            )
 
     def test_remaining_mr03_binding_is_still_enforced_by_workflow(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
         wrong = _final_fixture_module.FinalResultRuntimeTests._proposal_with(chain["proposal"], bound_mr03_package_identity="f"*64)
-        _, response, raw = self._transport(chain, proposal_record=wrong)
-        with self.assertRaisesRegex(workflow.WorkflowCompositionError, "bound_mr03_package_identity"): self._compose(chain, cloud_response_record=response, raw_provider_response=raw)
+        authorization, raw, transport_metadata = self._transport(
+            chain, proposal_record=wrong
+        )
+        with self.assertRaisesRegex(
+            workflow.WorkflowCompositionError, "bound_mr03_package_identity"
+        ):
+            self._compose(
+                chain,
+                cloud_execution_authorization_record=authorization,
+                raw_provider_response=raw,
+                **transport_metadata,
+            )
 
     def test_disclosure_denial_fails_before_cloud_request_composition(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain(); denied = disclosure.build_disclosure(classification="INTERNAL")
@@ -181,8 +244,26 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(workflow.WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT,1)
 
     def test_external_discontinuities_are_required_parameters(self):
-        signature = inspect.signature(workflow.compose_top_level_workflow); self.assertNotIn("proposal_record",signature.parameters)
-        for name in ("cloud_execution_authorization_record","cloud_response_record","raw_provider_response","human_authorization_reference","model_identifier","verification_record","approved_root","manifest_relative_path","final_result_relative_path"): self.assertIs(signature.parameters[name].default,inspect.Parameter.empty)
+        signature = inspect.signature(workflow.compose_top_level_workflow)
+        self.assertNotIn("proposal_record", signature.parameters)
+        self.assertNotIn("cloud_response_record", signature.parameters)
+        for name in (
+            "cloud_execution_authorization_record",
+            "raw_provider_response",
+            "provider_identifier",
+            "actual_model_identifier",
+            "provider_request_id",
+            "account_boundary_reference",
+            "provider_usage_if_available",
+            "error_metadata",
+            "human_authorization_reference",
+            "model_identifier",
+            "verification_record",
+            "approved_root",
+            "manifest_relative_path",
+            "final_result_relative_path",
+        ):
+            self.assertIs(signature.parameters[name].default, inspect.Parameter.empty)
 
 
 if __name__ == "__main__":

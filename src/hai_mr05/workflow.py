@@ -211,8 +211,13 @@ def compose_top_level_workflow(
     human_authorization_reference: object,
     estimated_token_metadata: Mapping[str, object],
     cloud_execution_authorization_record: object,
-    cloud_response_record: object,
     raw_provider_response: bytes,
+    provider_identifier: object,
+    actual_model_identifier: object,
+    provider_request_id: object,
+    account_boundary_reference: object,
+    provider_usage_if_available: Mapping[str, object] | None,
+    error_metadata: Mapping[str, object] | None,
     legacy_verifier_result: object,
     verification_record: object,
     approved_root: object,
@@ -230,9 +235,10 @@ def compose_top_level_workflow(
 ) -> WorkflowCompositionResult:
     """Compose supplied deterministic records without executing external authority.
 
-    Cloud execution authorization, provider response data, raw provider-response
-    bytes, Human Decision data, and final-evidence destination data are explicit
-    discontinuity inputs. The function never executes a model/provider call and never
+    Cloud execution authorization, already-obtained raw provider-response bytes,
+    non-secret transport metadata, Human Decision data, and final-evidence destination
+    data are explicit discontinuity inputs. The function never executes a model/provider
+    call or external transport and never
     makes a Human decision. Final-evidence publication is delegated exactly once to the
     qualified evidence persistence boundary. A supplied
     run must be the authoritative FrozenRunRecord shape; the
@@ -261,8 +267,16 @@ def compose_top_level_workflow(
     authorization = cloud_boundary.validate_cloud_execution_authorization(
         cloud_execution_authorization_record, request
     )
-    response = cloud_boundary.validate_cloud_response_binding(
-        cloud_response_record, request, authorization
+    response = cloud_boundary.adapt_governed_external_transport_response(
+        request,
+        authorization,
+        raw_provider_response=raw_provider_response,
+        provider_identifier=provider_identifier,
+        actual_model_identifier=actual_model_identifier,
+        provider_request_id=provider_request_id,
+        account_boundary_reference=account_boundary_reference,
+        provider_usage_if_available=provider_usage_if_available,
+        error_metadata=error_metadata,
     )
     admitted_proposal = proposal.admit_cloud_response_proposal(
         raw_provider_response, response, request, authorization
