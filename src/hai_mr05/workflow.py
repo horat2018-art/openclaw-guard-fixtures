@@ -210,7 +210,9 @@ def compose_top_level_workflow(
     model_identifier: object,
     human_authorization_reference: object,
     estimated_token_metadata: Mapping[str, object],
-    cloud_execution_authorization_record: object,
+    authorized_provider_identifier: object,
+    authorized_account_boundary_reference: object,
+    authorization_observational_metadata: Mapping[str, object] | None,
     raw_provider_response: bytes,
     provider_identifier: object,
     actual_model_identifier: object,
@@ -235,8 +237,8 @@ def compose_top_level_workflow(
 ) -> WorkflowCompositionResult:
     """Compose supplied deterministic records without executing external authority.
 
-    Cloud execution authorization, already-obtained raw provider-response bytes,
-    non-secret transport metadata, Human Decision data, and final-evidence destination
+    Authorized provider/account intent, already-obtained raw provider-response bytes,
+    non-secret actual transport metadata, Human Decision data, and final-evidence destination
     data are explicit discontinuity inputs. The function never executes a model/provider
     call or external transport and never
     makes a Human decision. Final-evidence publication is delegated exactly once to the
@@ -264,8 +266,11 @@ def compose_top_level_workflow(
         observational_metadata=request_observational_metadata,
     )
 
-    authorization = cloud_boundary.validate_cloud_execution_authorization(
-        cloud_execution_authorization_record, request
+    authorization = cloud_boundary.build_cloud_execution_authorization(
+        request,
+        provider_identifier=authorized_provider_identifier,
+        account_boundary_reference=authorized_account_boundary_reference,
+        observational_metadata=authorization_observational_metadata,
     )
     response = cloud_boundary.adapt_governed_external_transport_response(
         request,
