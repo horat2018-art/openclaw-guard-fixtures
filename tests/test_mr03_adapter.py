@@ -42,39 +42,39 @@ class AdapterTests(unittest.TestCase):
    with self.assertRaises(Exception) as c: verify_identity()
   self.assertEqual(c.exception.code,'MR03_IDENTITY_MISMATCH')
 
- def test_checked_path_is_exact_subprocess_path(self):
-  import json, tempfile, pathlib
+ def test_checked_path_is_descriptor_pinned_subprocess_path(self):
+  import json, tempfile, pathlib, os
   from types import SimpleNamespace
   from unittest.mock import patch
   from hai_mr04.mr03_adapter import invoke_read_only
   valid={"L0_IDENTITY_HEADER":{"qualification_exposure":0},"L1_CURRENT_STATE":{},"L2_REQUIRED_EVIDENCE":[],"L3_RELEVANT_HISTORICAL_DELTA":[],"L4_PROVENANCE_REFERENCES":[],"L5_EXCLUDED_EVIDENCE_INDEX":[],"L6_VALIDATION_REPORT":{}}
   with tempfile.TemporaryDirectory() as d:
-   root=pathlib.Path(d).resolve();seen={}
+   root=pathlib.Path(d,'root').resolve();root.mkdir();seen={}
    def fake_run(argv,**kwargs):
-    seen['cwd']=kwargs['cwd'];seen['pythonpath']=kwargs['env']['PYTHONPATH']
+    seen['cwd']=kwargs['cwd'];seen['pythonpath']=kwargs['env']['PYTHONPATH'];seen['pass_fds']=kwargs['pass_fds'];seen['resolved']=os.path.realpath(kwargs['cwd'])
     output=pathlib.Path(argv[argv.index('--output')+1]);output.mkdir()
     (output/'optimized_package.json').write_text(json.dumps(valid))
     return SimpleNamespace(returncode=0,stderr='')
-   with patch('hai_mr04.mr03_adapter._resolved_root',return_value=str(root)) as resolve, patch('hai_mr04.mr03_adapter.verify_identity',side_effect=lambda checked: seen.setdefault('checked',checked)), patch('hai_mr04.mr03_adapter.subprocess.run',side_effect=fake_run):
+   with patch('hai_mr04.mr03_adapter.DEFAULT_ROOT',str(root)), patch('hai_mr04.mr03_adapter._resolved_root',return_value=str(root)) as resolve, patch('hai_mr04.mr03_adapter._verify_identity_fd',return_value='x'*40), patch('hai_mr04.mr03_adapter.subprocess.run',side_effect=fake_run):
     result=invoke_read_only(str(root/'source'),{})
-   self.assertEqual(result,valid);self.assertEqual(resolve.call_count,1);self.assertEqual(seen['cwd'],str(root));self.assertEqual(seen['pythonpath'],str(root/'src'))
+   self.assertEqual(result,valid);self.assertEqual(resolve.call_count,1);self.assertTrue(seen['cwd'].startswith('/proc/self/fd/'));self.assertEqual(seen['resolved'],str(root));self.assertEqual(seen['pythonpath'],seen['cwd']+'/src');self.assertEqual(len(seen['pass_fds']),1)
 
- def test_second_resolution_cannot_substitute_execution_path(self):
-  import json, tempfile, pathlib
+ def test_root_replacement_during_subprocess_fails_closed(self):
+  import json, tempfile, pathlib, os
   from types import SimpleNamespace
   from unittest.mock import patch
   from hai_mr04.mr03_adapter import invoke_read_only
   valid={"L0_IDENTITY_HEADER":{"qualification_exposure":0},"L1_CURRENT_STATE":{},"L2_REQUIRED_EVIDENCE":[],"L3_RELEVANT_HISTORICAL_DELTA":[],"L4_PROVENANCE_REFERENCES":[],"L5_EXCLUDED_EVIDENCE_INDEX":[],"L6_VALIDATION_REPORT":{}}
   with tempfile.TemporaryDirectory() as d:
-   root_a=pathlib.Path(d,'a').resolve();root_b=pathlib.Path(d,'b').resolve();root_a.mkdir();root_b.mkdir();seen={}
+   root=pathlib.Path(d,'root').resolve();root.mkdir();moved=pathlib.Path(d,'moved').resolve();seen={}
    def fake_run(argv,**kwargs):
-    seen['cwd']=kwargs['cwd']
+    root.rename(moved);root.mkdir();seen['executed_root']=os.path.realpath(kwargs['cwd'])
     output=pathlib.Path(argv[argv.index('--output')+1]);output.mkdir()
     (output/'optimized_package.json').write_text(json.dumps(valid))
     return SimpleNamespace(returncode=0,stderr='')
-   with patch('hai_mr04.mr03_adapter._resolved_root',side_effect=[str(root_a),str(root_b)]) as resolve, patch('hai_mr04.mr03_adapter.verify_identity',side_effect=lambda checked: seen.setdefault('checked',checked)), patch('hai_mr04.mr03_adapter.subprocess.run',side_effect=fake_run):
-    invoke_read_only(str(root_a/'source'),{})
-   self.assertEqual(resolve.call_count,1);self.assertEqual(seen['checked'],str(root_a));self.assertEqual(seen['cwd'],str(root_a))
+   with patch('hai_mr04.mr03_adapter.DEFAULT_ROOT',str(root)), patch('hai_mr04.mr03_adapter._resolved_root',return_value=str(root)), patch('hai_mr04.mr03_adapter._verify_identity_fd',return_value='x'*40), patch('hai_mr04.mr03_adapter.subprocess.run',side_effect=fake_run):
+    with self.assertRaises(Exception) as c: invoke_read_only(str(root/'source'),{})
+   self.assertEqual(c.exception.code,'SOURCE_PATH_ESCAPE');self.assertEqual(seen['executed_root'],str(moved))
 
  def test_alternate_clone_path_fails_closed(self):
   import os, tempfile, pathlib
