@@ -160,18 +160,63 @@ def _construct_human_gate(
         ) from exc
 
 
-def _qualified_decision(
-    value: object | None,
+def _construct_human_decision(
+    *,
+    run: evidence.FrozenRunRecord,
     gate: human_gate.HumanGateRecord | None,
+    decision: object | None,
+    decision_reason: object | None,
+    decision_scope: object | None,
+    human_authority_reference: object | None,
+    observational_metadata: Mapping[str, object] | None,
 ) -> human_gate.HumanDecisionRecord | None:
-    if value is None:
+    construction_material = (
+        decision,
+        decision_reason,
+        decision_scope,
+        human_authority_reference,
+    )
+    any_material = any(value is not None for value in construction_material)
+    any_material = any_material or observational_metadata is not None
+
+    if run.state in _VERIFIED_TERMINAL_STATES:
+        if any_material:
+            raise WorkflowCompositionError(
+                "verified terminal state cannot consume Human Decision construction material"
+            )
+        return None
+    if run.state not in _HUMAN_TERMINAL_STATES:
+        if any_material:
+            raise WorkflowCompositionError(
+                "non-human terminal state cannot consume Human Decision construction material"
+            )
         return None
     if gate is None:
         raise WorkflowCompositionError(
-            "human_decision_record requires an explicit qualified Human Gate"
+            "human terminal state requires a qualified Human Gate before Human Decision construction"
         )
-    payload = value.to_dict() if isinstance(value, human_gate.HumanDecisionRecord) else value
-    return human_gate.HumanDecisionRecord.from_mapping(payload, human_gate=gate)
+    if any(value is None for value in construction_material):
+        raise WorkflowCompositionError(
+            "human terminal state requires complete Human Decision construction material"
+        )
+
+    fields: dict[str, object] = {
+        "decision": decision,
+        "decision_reason": decision_reason,
+        "decision_scope": decision_scope,
+        "human_authority_reference": human_authority_reference,
+    }
+    if observational_metadata is not None:
+        fields["observational_metadata"] = observational_metadata
+    try:
+        return human_gate.build_human_decision(
+            human_gate=gate,
+            **fields,
+        )
+    except human_gate.HumanGateValidationError as exc:
+        raise WorkflowCompositionError(
+            "Human Decision construction failed closed"
+        ) from exc
 
 
 def _validate_remaining_proposal_bindings(
@@ -234,7 +279,7 @@ def _validate_human_bindings(
 ) -> None:
     if run.state in _HUMAN_TERMINAL_STATES and (gate is None or decision is None):
         raise WorkflowCompositionError(
-            "human terminal state requires explicit Human Gate and Human Decision records"
+            "human terminal state requires constructed Human Gate and Human Decision records"
         )
     if run.state in _VERIFIED_TERMINAL_STATES and (gate is not None or decision is not None):
         raise WorkflowCompositionError(
@@ -288,7 +333,11 @@ def compose_top_level_workflow(
     human_gate_uncertainties: object | None = None,
     human_gate_evidence_pointers: object | None = None,
     human_gate_observational_metadata: Mapping[str, object] | None = None,
-    human_decision_record: object | None = None,
+    human_decision: object | None = None,
+    human_decision_reason: object | None = None,
+    human_decision_scope: object | None = None,
+    human_decision_authority_reference: object | None = None,
+    human_decision_observational_metadata: Mapping[str, object] | None = None,
     failure_record: object | None = None,
     prohibited_assumptions: object = (),
     context_observational_metadata: Mapping[str, object] | None = None,
@@ -300,11 +349,11 @@ def compose_top_level_workflow(
 
     Authorized provider/account intent, already-obtained raw provider-response bytes,
     non-secret actual transport metadata, Human Gate presentation/evidence material,
-    Human Decision data, and final-evidence destination data are explicit discontinuity
-    inputs. Human Gate construction is deterministic and occurs only for Human terminal
-    states; Human Decision remains an explicitly supplied record. The function never executes a model/provider
-    call or external transport and never
-    makes a Human decision. Final-evidence publication is delegated exactly once to the
+    Human Decision material, and final-evidence destination data are explicit discontinuity
+    inputs. Human Gate and Human Decision record construction is deterministic and occurs
+    only for Human terminal states. The function never executes a model/provider call or
+    external transport, never chooses a Human decision, and never performs a state transition.
+    Final-evidence publication is delegated exactly once to the
     qualified evidence persistence boundary. A supplied
     run must be the authoritative FrozenRunRecord shape; the
     legacy controller RunRecord is intentionally not bridged or coerced.
@@ -368,7 +417,15 @@ def compose_top_level_workflow(
         evidence_pointers=human_gate_evidence_pointers,
         observational_metadata=human_gate_observational_metadata,
     )
-    decision = _qualified_decision(human_decision_record, gate)
+    decision = _construct_human_decision(
+        run=run,
+        gate=gate,
+        decision=human_decision,
+        decision_reason=human_decision_reason,
+        decision_scope=human_decision_scope,
+        human_authority_reference=human_decision_authority_reference,
+        observational_metadata=human_decision_observational_metadata,
+    )
     _validate_human_bindings(
         run=run,
         proposal_record=admitted_proposal,
