@@ -335,6 +335,24 @@ def _validated_root(value: object) -> _ValidatedRoot:
     return _ValidatedRoot(value, _state_tuple(info))
 
 
+def _requalify_root_path(root: _ValidatedRoot, root_fd: int) -> None:
+    """Require the approved path to still name the exact opened root before success."""
+    try:
+        current = os.lstat(root.path)
+        opened = os.fstat(root_fd)
+    except OSError as exc:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, f"approved_root continuity requalification failed: {exc}")
+    if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode):
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "approved_root changed type during operation")
+    if os.path.realpath(root.path) != root.path:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "approved_root realpath changed during operation")
+    expected_identity = (root.state[0], root.state[1])
+    current_identity = (current.st_dev, current.st_ino)
+    opened_identity = (opened.st_dev, opened.st_ino)
+    if current_identity != expected_identity or opened_identity != expected_identity:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "approved_root path substitution detected during operation")
+
+
 def approved_root_identity(approved_root: object) -> str:
     """Compute root identity without another filesystem resolution."""
     if type(approved_root) is not str or not approved_root:
@@ -537,6 +555,7 @@ def persist_evidence(
             os.fsync(parent_fd)
         except OSError as exc:
             _fail(FailureCode.MR05_INTERNAL_INVARIANT, f"successful-publication temporary-link cleanup failed: {exc}")
+        _requalify_root_path(root, root_fd)
         return PersistenceResult(
             run_identity=record.run_identity,
             manifest_identity=record.manifest_identity,
@@ -1681,6 +1700,7 @@ def persist_final_evidence_records(
             root_fd=root_fd, relative_path=final_path, canonical=final_bytes,
             temp_name=f".mr15j-final-{qualified_final.final_result_identity}.tmp",
         )
+        _requalify_root_path(root, root_fd)
     finally:
         if root_fd is not None:
             os.close(root_fd)
@@ -1783,6 +1803,7 @@ def audit_persisted_final_evidence_records(
         final_read = _read_persisted_evidence_bytes(
             root_fd=root_fd, relative_path=final_path, expected=final_bytes
         )
+        _requalify_root_path(root, root_fd)
     finally:
         if root_fd is not None:
             os.close(root_fd)

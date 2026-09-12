@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from hai_mr05 import cloud_boundary, context_builder, disclosure, discovery, evidence, human_gate, identity, metrics, mr03_adapter, mr04_adapter, normalization, proposal, provenance, verifier
 from hai_mr05.canonical import canonical_json_bytes
@@ -352,6 +353,26 @@ class FinalResultRuntimeTests(unittest.TestCase):
             self.assertEqual(observed.final_result_content_sha256,hashlib.sha256(final_bytes).hexdigest())
             self.assertFalse(observed.human_approval or observed.state_transition_authority or observed.source_write_authority or observed.git_authority or observed.model_provider_authority)
 
+    def test_final_evidence_persistence_rejects_root_path_substitution(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp); root=base/"root"; root.mkdir(); detached=base/"detached"
+            original=evidence._publish_final_evidence_bytes; calls={"count":0}
+            def publish_and_swap(**kwargs):
+                result=original(**kwargs); calls["count"] += 1
+                if calls["count"] == 1:
+                    root.rename(detached); root.mkdir()
+                return result
+            with mock.patch.object(evidence, "_publish_final_evidence_bytes", side_effect=publish_and_swap):
+                with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+                    evidence.persist_final_evidence_records(
+                        approved_root=str(root),manifest_relative_path="manifest.json",final_result_relative_path="final.json",
+                        manifest=manifest,final_result=final,**self._evidence_args(chain),
+                    )
+            self.assertEqual(caught.exception.code,FailureCode.SOURCE_PATH_ESCAPE.value)
+            self.assertFalse((root/"manifest.json").exists() or (root/"final.json").exists())
+            self.assertTrue((detached/"manifest.json").exists() and (detached/"final.json").exists())
+
     def test_final_evidence_readback_audit_accepts_exact_persisted_bytes(self):
         chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
         with tempfile.TemporaryDirectory() as tmp:
@@ -369,6 +390,30 @@ class FinalResultRuntimeTests(unittest.TestCase):
             self.assertEqual(audited.manifest_content_sha256,observed.manifest_content_sha256)
             self.assertEqual(audited.final_result_content_sha256,observed.final_result_content_sha256)
             self.assertFalse(audited.filesystem_write_authority)
+
+    def test_final_evidence_readback_audit_rejects_root_path_substitution(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp); root=base/"root"; root.mkdir(); detached=base/"detached"
+            observed=evidence.persist_final_evidence_records(
+                approved_root=str(root),manifest_relative_path="manifest.json",final_result_relative_path="final.json",
+                manifest=manifest,final_result=final,**self._evidence_args(chain),
+            )
+            original=evidence._read_persisted_evidence_bytes; calls={"count":0}
+            def read_and_swap(**kwargs):
+                result=original(**kwargs); calls["count"] += 1
+                if calls["count"] == 1:
+                    root.rename(detached); root.mkdir()
+                return result
+            with mock.patch.object(evidence, "_read_persisted_evidence_bytes", side_effect=read_and_swap):
+                with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+                    evidence.audit_persisted_final_evidence_records(
+                        approved_root=str(root),persistence_result=observed,manifest=manifest,final_result=final,
+                        **self._evidence_args(chain),
+                    )
+            self.assertEqual(caught.exception.code,FailureCode.SOURCE_PATH_ESCAPE.value)
+            self.assertFalse((root/"manifest.json").exists() or (root/"final.json").exists())
+            self.assertTrue((detached/"manifest.json").exists() and (detached/"final.json").exists())
 
     def test_final_evidence_readback_audit_rejects_manifest_or_final_tamper(self):
         chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)

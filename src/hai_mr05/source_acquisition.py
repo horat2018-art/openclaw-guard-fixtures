@@ -104,6 +104,24 @@ def _validated_root(value: object) -> _ValidatedRoot:
     return _ValidatedRoot(value, _state_tuple(info))
 
 
+def _requalify_root_path(root: _ValidatedRoot, root_fd: int) -> None:
+    """Require the approved path to still name the exact opened root before success."""
+    try:
+        current = os.lstat(root.path)
+        opened = os.fstat(root_fd)
+    except OSError as exc:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, f"approved_root continuity requalification failed: {exc}")
+    if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode):
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "approved_root changed type during operation")
+    if os.path.realpath(root.path) != root.path:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "approved_root realpath changed during operation")
+    expected_identity = (root.state[0], root.state[1])
+    current_identity = (current.st_dev, current.st_ino)
+    opened_identity = (opened.st_dev, opened.st_ino)
+    if current_identity != expected_identity or opened_identity != expected_identity:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "approved_root path substitution detected during operation")
+
+
 def approved_root_identity(approved_root: object) -> str:
     """Compute identity from an already-authorized exact root path.
 
@@ -238,6 +256,7 @@ def _read_regular_file_once(root: _ValidatedRoot, relative_path: str) -> bytes:
         raw = b"".join(chunks)
         if len(raw) != after.st_size:
             _fail(FailureCode.HASH_MISMATCH, "captured byte count does not match opened source")
+        _requalify_root_path(root, root_fd)
         return raw
     finally:
         if final_fd is not None:

@@ -143,6 +143,22 @@ class EvidenceRuntimeTests(unittest.TestCase):
                 evidence.persist_evidence(approved_root=tmp, relative_path='manifest.json', manifest=manifest)
             self.assertEqual(wrapped.call_count, 1)
 
+    def test_root_path_substitution_during_persistence_fails_closed(self):
+        manifest = self._manifest()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp); root = base / 'root'; root.mkdir(); detached = base / 'detached'
+            original = evidence._publish_no_replace; swapped = {"done": False}
+            def publish_and_swap(parent_fd, temp_name, final_name):
+                original(parent_fd, temp_name, final_name)
+                if not swapped["done"]:
+                    root.rename(detached); root.mkdir(); swapped["done"] = True
+            with mock.patch.object(evidence, '_publish_no_replace', side_effect=publish_and_swap):
+                with self.assertRaises(evidence.EvidencePersistenceError) as raised:
+                    evidence.persist_evidence(approved_root=str(root), relative_path='manifest.json', manifest=manifest)
+            self.assertEqual(raised.exception.code, FailureCode.SOURCE_PATH_ESCAPE.value)
+            self.assertFalse((root / 'manifest.json').exists())
+            self.assertTrue((detached / 'manifest.json').exists())
+
     def test_root_symlink_substitution_fails_closed(self):
         manifest = self._manifest()
         with tempfile.TemporaryDirectory() as outer:

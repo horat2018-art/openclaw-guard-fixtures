@@ -68,6 +68,22 @@ class SourceAcquisitionTests(unittest.TestCase):
                 with self.subTest(root=candidate), self.assertRaises(source_acquisition.SourceAcquisitionError):
                     source_acquisition.capture_source(approved_root=candidate, relative_path="x", source_alias="fixture", provenance_owner="TEST")
 
+    def test_root_path_substitution_during_capture_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp); root = base / "root"; root.mkdir(); (root / "sample.bin").write_bytes(b"stable")
+            detached = base / "detached"; real_read = source_acquisition.os.read; swapped = {"done": False}
+            def read_and_swap(fd, size):
+                chunk = real_read(fd, size)
+                if chunk and not swapped["done"]:
+                    root.rename(detached); root.mkdir(); (root / "sample.bin").write_bytes(b"replacement"); swapped["done"] = True
+                return chunk
+            with mock.patch.object(source_acquisition.os, "read", side_effect=read_and_swap):
+                with self.assertRaises(source_acquisition.SourceAcquisitionError) as raised:
+                    self._capture(root)
+            self.assertEqual(raised.exception.code, FailureCode.SOURCE_PATH_ESCAPE.value)
+            self.assertEqual((root / "sample.bin").read_bytes(), b"replacement")
+            self.assertEqual((detached / "sample.bin").read_bytes(), b"stable")
+
     def test_root_symlink_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp); real = base / "real"; real.mkdir(); link = base / "link"; link.symlink_to(real, target_is_directory=True)
