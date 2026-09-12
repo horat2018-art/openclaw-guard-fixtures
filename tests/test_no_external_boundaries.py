@@ -203,6 +203,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertNotIn('cloud_boundary.validate_cloud_response_binding(', text)
                 self.assertNotIn('cloud_boundary.build_cloud_response_record(', text)
                 self.assertIn('proposal.admit_cloud_response_proposal(', text)
+                self.assertEqual(text.count('human_gate.build_human_gate('), 1)
                 self.assertEqual(text.count('evidence.persist_final_evidence_records('), 1)
                 self.assertIn('final_evidence_persistence_result: evidence.FinalEvidencePersistenceResult', text)
                 self.assertNotIn('proposal.parse_cloud_proposal(', text)

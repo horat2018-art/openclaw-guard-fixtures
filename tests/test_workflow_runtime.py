@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hai_mr05 import cloud_boundary, disclosure, evidence, failures, proposal, workflow
+from hai_mr05 import cloud_boundary, disclosure, evidence, failures, human_gate, proposal, workflow
 try:
     import tests.test_final_result_runtime as _final_fixture_module
 except ModuleNotFoundError:
@@ -48,9 +48,21 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "legacy_verifier_result": chain["legacy"], "verification_record": chain["verification"],
             "manifest_relative_path": "manifest.json", "final_result_relative_path": "final.json",
             "verifier_failure_records": chain["verifier_failures"],
-            "human_gate_record": chain["gate"], "human_decision_record": chain["decision"],
             "failure_record": chain["failure"],
         }
+        if chain["gate"] is not None:
+            gate = chain["gate"]
+            args.update({
+                "human_gate_task_summary": gate.task_summary,
+                "human_gate_proposal_summary": gate.proposal_summary,
+                "human_gate_uncertainties": gate.uncertainties,
+                "human_gate_evidence_pointers": gate.evidence_pointers,
+                "human_gate_observational_metadata": (
+                    None
+                    if gate.observational_metadata is None
+                    else dict(gate.observational_metadata)
+                ),
+            })
         if "approved_root" in overrides:
             args.update(overrides)
             return workflow.compose_top_level_workflow(**args)
@@ -58,6 +70,53 @@ class WorkflowRuntimeTests(unittest.TestCase):
             args["approved_root"] = tmp
             args.update(overrides)
             return workflow.compose_top_level_workflow(**args)
+
+    @staticmethod
+    def _human_discontinuities(chain):
+        supplied_gate = chain["gate"]
+        supplied_decision = chain["decision"]
+        if supplied_gate is None or supplied_decision is None:
+            raise AssertionError("human discontinuity fixture requires gate and decision")
+        proposal_record = chain["proposal"]
+        verification_record = chain["verification"]
+        context_record = chain["cloud_context"]
+        gate_fields = {
+            "run_identity": chain["run"].run_identity,
+            "task_identity": proposal_record.task_identity,
+            "proposal_identity": proposal_record.proposal_identity,
+            "verification_identity": verification_record.verification_identity,
+            "package_identity": proposal_record.bound_package_identity,
+            "context_identity": context_record.context_identity,
+            "task_summary": supplied_gate.task_summary,
+            "proposal_summary": supplied_gate.proposal_summary,
+            "verification_result": verification_record.verification_result,
+            "reason_codes": verification_record.reason_codes,
+            "source_refs": tuple(
+                ref.to_dict() for ref in verification_record.verified_source_refs
+            ),
+            "uncertainties": supplied_gate.uncertainties,
+            "evidence_pointers": supplied_gate.evidence_pointers,
+        }
+        if supplied_gate.observational_metadata is not None:
+            gate_fields["observational_metadata"] = dict(
+                supplied_gate.observational_metadata
+            )
+        expected_gate = human_gate.build_human_gate(**gate_fields)
+        decision_fields = {
+            "decision": supplied_decision.decision,
+            "decision_reason": supplied_decision.decision_reason,
+            "decision_scope": supplied_decision.decision_scope,
+            "human_authority_reference": supplied_decision.human_authority_reference,
+        }
+        if supplied_decision.observational_metadata is not None:
+            decision_fields["observational_metadata"] = dict(
+                supplied_decision.observational_metadata
+            )
+        decision = human_gate.build_human_decision(
+            human_gate=expected_gate,
+            **decision_fields,
+        )
+        return expected_gate, decision
 
     def test_exact_pass_chain_admits_transport_and_matches_authoritative_final_chain(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
@@ -154,21 +213,132 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 or observed.model_provider_authority
             )
 
+    def test_human_gate_builder_is_exact_single_delegation_for_human_terminal_state(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
+        expected_gate, decision = self._human_discontinuities(chain)
+        original = human_gate.build_human_gate
+        with mock.patch.object(
+            human_gate,
+            "build_human_gate",
+            side_effect=original,
+        ) as delegated:
+            composed = self._compose(chain, human_decision_record=decision)
+        delegated.assert_called_once()
+        call = delegated.call_args
+        self.assertFalse(call.args)
+        self.assertEqual(call.kwargs["run_identity"], chain["run"].run_identity)
+        self.assertEqual(call.kwargs["proposal_identity"], composed.proposal_record.proposal_identity)
+        self.assertEqual(call.kwargs["verification_identity"], composed.verification_record.verification_identity)
+        self.assertEqual(call.kwargs["context_identity"], composed.cloud_context_record.context_identity)
+        self.assertNotIn("human_action_options", call.kwargs)
+        self.assertEqual(composed.human_gate_record, expected_gate)
+
+    def test_verified_terminal_state_never_constructs_human_gate(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        with mock.patch.object(human_gate, "build_human_gate") as delegated:
+            composed = self._compose(chain)
+        delegated.assert_not_called()
+        self.assertIsNone(composed.human_gate_record)
+
     def test_human_approved_chain_consumes_only_explicit_supplied_decision(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
-        composed = self._compose(chain)
+        expected_gate, decision = self._human_discontinuities(chain)
+        composed = self._compose(chain, human_decision_record=decision)
+        self.assertEqual(composed.human_gate_record, expected_gate)
         self.assertEqual(composed.human_decision_record.decision, "APPROVE")
         self.assertEqual(composed.final_result.human_decision_if_any, "APPROVE")
-        self.assertEqual(composed.final_result.final_result_identity, _final_fixture_module.FinalResultRuntimeTests._final(chain, composed.evidence_manifest).final_result_identity)
+        expected_chain = dict(chain)
+        expected_chain["gate"] = expected_gate
+        expected_chain["decision"] = decision
+        self.assertEqual(
+            composed.final_result.final_result_identity,
+            _final_fixture_module.FinalResultRuntimeTests._final(
+                expected_chain, composed.evidence_manifest
+            ).final_result_identity,
+        )
+
+    def test_remaining_human_terminal_states_preserve_explicit_decision_bindings(self):
+        cases = (
+            ("HUMAN_REJECTED", "REJECT"),
+            ("HUMAN_REWORK", "REQUEST_REWORK"),
+            ("HUMAN_MORE_EVIDENCE", "REQUEST_MORE_EVIDENCE"),
+        )
+        for state, action in cases:
+            with self.subTest(state=state):
+                chain = _final_fixture_module.FinalResultRuntimeTests._full_chain(state)
+                expected_gate, decision = self._human_discontinuities(chain)
+                with mock.patch.object(
+                    human_gate, "build_human_gate",
+                    wraps=human_gate.build_human_gate,
+                ) as delegated, mock.patch.object(
+                    human_gate, "build_human_decision",
+                    side_effect=AssertionError("workflow must consume an explicit decision"),
+                ) as decision_builder:
+                    composed = self._compose(chain, human_decision_record=decision)
+                delegated.assert_called_once()
+                decision_builder.assert_not_called()
+                self.assertEqual(composed.human_gate_record, expected_gate)
+                self.assertEqual(composed.human_decision_record, decision)
+                self.assertEqual(
+                    composed.human_decision_record.human_gate_identity,
+                    composed.human_gate_record.human_gate_identity,
+                )
+                self.assertEqual(composed.human_decision_record.decision, action)
+                self.assertEqual(composed.final_result.terminal_state, state)
+                self.assertEqual(composed.final_result.human_decision_if_any, action)
+                expected_chain = dict(chain, gate=expected_gate, decision=decision)
+                expected_final = _final_fixture_module.FinalResultRuntimeTests._final(
+                    expected_chain, composed.evidence_manifest
+                )
+                self.assertEqual(
+                    composed.final_result.final_result_identity,
+                    expected_final.final_result_identity,
+                )
+                with mock.patch.object(
+                    evidence, "persist_final_evidence_records",
+                ) as persistence:
+                    with self.assertRaises(workflow.WorkflowCompositionError):
+                        self._compose(chain, human_decision_record=None)
+                    for field in (
+                        "human_gate_task_summary",
+                        "human_gate_proposal_summary",
+                        "human_gate_uncertainties",
+                        "human_gate_evidence_pointers",
+                    ):
+                        with self.subTest(missing_field=field):
+                            with self.assertRaisesRegex(
+                                workflow.WorkflowCompositionError,
+                                "complete Human Gate construction material",
+                            ):
+                                self._compose(
+                                    chain, human_decision_record=decision,
+                                    **{field: None},
+                                )
+                    persistence.assert_not_called()
 
     def test_human_terminal_state_without_explicit_decision_fails_closed(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
         with self.assertRaises(workflow.WorkflowCompositionError): self._compose(chain, human_decision_record=None)
 
-    def test_verified_terminal_state_rejects_unsolicited_human_records(self):
+    def test_human_terminal_state_requires_complete_gate_construction_material(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
+        with self.assertRaisesRegex(
+            workflow.WorkflowCompositionError, "complete Human Gate construction material"
+        ):
+            self._compose(chain, human_gate_evidence_pointers=None)
+
+    def test_verified_terminal_state_rejects_human_gate_material_and_decision(self):
         verified = _final_fixture_module.FinalResultRuntimeTests._full_chain()
         human = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
-        with self.assertRaises(workflow.WorkflowCompositionError): self._compose(verified, human_gate_record=human["gate"], human_decision_record=human["decision"])
+        with self.assertRaisesRegex(
+            workflow.WorkflowCompositionError, "Human Gate construction material"
+        ):
+            self._compose(
+                verified,
+                human_gate_task_summary=human["gate"].task_summary,
+            )
+        with self.assertRaises(workflow.WorkflowCompositionError):
+            self._compose(verified, human_decision_record=human["decision"])
 
     def test_legacy_controller_runrecord_is_never_implicitly_bridged(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
@@ -282,6 +452,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertNotIn("proposal_record", signature.parameters)
         self.assertNotIn("cloud_response_record", signature.parameters)
         self.assertNotIn("cloud_execution_authorization_record", signature.parameters)
+        self.assertNotIn("human_gate_record", signature.parameters)
         for name in (
             "authorized_provider_identifier",
             "authorized_account_boundary_reference",

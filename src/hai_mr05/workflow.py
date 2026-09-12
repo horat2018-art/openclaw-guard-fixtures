@@ -95,12 +95,69 @@ def _cloud_budget(run: evidence.FrozenRunRecord) -> dict[str, object]:
     }
 
 
-def _qualified_gate(value: object | None) -> human_gate.HumanGateRecord | None:
-    if value is None:
+def _construct_human_gate(
+    *,
+    run: evidence.FrozenRunRecord,
+    context: cloud_boundary.CloudContext,
+    proposal_record: proposal.CloudProposal,
+    verification_record: verifier.VerificationRecord,
+    task_summary: object | None,
+    proposal_summary: object | None,
+    uncertainties: object | None,
+    evidence_pointers: object | None,
+    observational_metadata: Mapping[str, object] | None,
+) -> human_gate.HumanGateRecord | None:
+    construction_material = (
+        task_summary,
+        proposal_summary,
+        uncertainties,
+        evidence_pointers,
+    )
+    any_material = any(value is not None for value in construction_material)
+    any_material = any_material or observational_metadata is not None
+
+    if run.state in _VERIFIED_TERMINAL_STATES:
+        if any_material:
+            raise WorkflowCompositionError(
+                "verified terminal state cannot consume Human Gate construction material"
+            )
         return None
-    if isinstance(value, human_gate.HumanGateRecord):
-        return human_gate.HumanGateRecord.from_mapping(value.to_dict())
-    return human_gate.HumanGateRecord.from_mapping(value)
+    if run.state not in _HUMAN_TERMINAL_STATES:
+        if any_material:
+            raise WorkflowCompositionError(
+                "non-human terminal state cannot consume Human Gate construction material"
+            )
+        return None
+    if any(value is None for value in construction_material):
+        raise WorkflowCompositionError(
+            "human terminal state requires complete Human Gate construction material"
+        )
+
+    fields: dict[str, object] = {
+        "run_identity": run.run_identity,
+        "task_identity": proposal_record.task_identity,
+        "proposal_identity": proposal_record.proposal_identity,
+        "verification_identity": verification_record.verification_identity,
+        "package_identity": proposal_record.bound_package_identity,
+        "context_identity": context.context_identity,
+        "task_summary": task_summary,
+        "proposal_summary": proposal_summary,
+        "verification_result": verification_record.verification_result,
+        "reason_codes": verification_record.reason_codes,
+        "source_refs": tuple(
+            ref.to_dict() for ref in verification_record.verified_source_refs
+        ),
+        "uncertainties": uncertainties,
+        "evidence_pointers": evidence_pointers,
+    }
+    if observational_metadata is not None:
+        fields["observational_metadata"] = observational_metadata
+    try:
+        return human_gate.build_human_gate(**fields)
+    except human_gate.HumanGateValidationError as exc:
+        raise WorkflowCompositionError(
+            "Human Gate construction failed closed"
+        ) from exc
 
 
 def _qualified_decision(
@@ -226,7 +283,11 @@ def compose_top_level_workflow(
     manifest_relative_path: object,
     final_result_relative_path: object,
     verifier_failure_records: object = (),
-    human_gate_record: object | None = None,
+    human_gate_task_summary: object | None = None,
+    human_gate_proposal_summary: object | None = None,
+    human_gate_uncertainties: object | None = None,
+    human_gate_evidence_pointers: object | None = None,
+    human_gate_observational_metadata: Mapping[str, object] | None = None,
     human_decision_record: object | None = None,
     failure_record: object | None = None,
     prohibited_assumptions: object = (),
@@ -238,8 +299,10 @@ def compose_top_level_workflow(
     """Compose supplied deterministic records without executing external authority.
 
     Authorized provider/account intent, already-obtained raw provider-response bytes,
-    non-secret actual transport metadata, Human Decision data, and final-evidence destination
-    data are explicit discontinuity inputs. The function never executes a model/provider
+    non-secret actual transport metadata, Human Gate presentation/evidence material,
+    Human Decision data, and final-evidence destination data are explicit discontinuity
+    inputs. Human Gate construction is deterministic and occurs only for Human terminal
+    states; Human Decision remains an explicitly supplied record. The function never executes a model/provider
     call or external transport and never
     makes a Human decision. Final-evidence publication is delegated exactly once to the
     qualified evidence persistence boundary. A supplied
@@ -294,7 +357,17 @@ def compose_top_level_workflow(
         legacy_result=legacy_verifier_result,
         failure_records=verifier_failure_records,
     )
-    gate = _qualified_gate(human_gate_record)
+    gate = _construct_human_gate(
+        run=run,
+        context=context,
+        proposal_record=admitted_proposal,
+        verification_record=supplied_verification,
+        task_summary=human_gate_task_summary,
+        proposal_summary=human_gate_proposal_summary,
+        uncertainties=human_gate_uncertainties,
+        evidence_pointers=human_gate_evidence_pointers,
+        observational_metadata=human_gate_observational_metadata,
+    )
     decision = _qualified_decision(human_decision_record, gate)
     _validate_human_bindings(
         run=run,
