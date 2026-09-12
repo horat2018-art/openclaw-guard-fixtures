@@ -14,7 +14,7 @@ test_command = "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest dis
 implementation = "HISTORICAL_FROZEN_BASELINE"
 
 [tool.hai_mr05.runtime]
-qualified_through = "HAI-MR-15AF-R2"
+qualified_through = "HAI-MR-15AH-R2"
 deterministic_runtime = "QUALIFIED_IMPLEMENTED"
 cli = "INTENTIONALLY_UNAVAILABLE"
 live_external_execution = "NOT_IMPLEMENTED"
