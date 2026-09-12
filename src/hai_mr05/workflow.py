@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from . import cloud_boundary, evidence, human_gate, proposal, verifier
+from . import cloud_boundary, disclosure, evidence, human_gate, proposal, verifier
 from .identity import sha256_bytes
 
 
@@ -307,7 +307,9 @@ def compose_top_level_workflow(
     *,
     run_record: object,
     bounded_context_record: object,
-    disclosure_record: object,
+    disclosure_classification: object,
+    disclosure_findings: object,
+    disclosure_observational_metadata: object | None,
     metrics_record: object,
     model_identifier: object,
     human_authorization_reference: object,
@@ -356,10 +358,11 @@ def compose_top_level_workflow(
     """Compose supplied deterministic records without executing external authority.
 
     Authorized provider/account intent, already-obtained raw provider-response bytes,
-    non-secret actual transport metadata, explicit public-verification semantic material,
-    Human Gate presentation/evidence material, Human Decision material, and final-evidence
-    destination data are explicit discontinuity inputs. Public Verification, Human Gate,
-    and Human Decision record construction is deterministic; verification semantics remain
+    non-secret actual transport metadata, explicit disclosure metadata, explicit
+    public-verification semantic material, Human Gate presentation/evidence material,
+    Human Decision material, and final-evidence destination data are explicit discontinuity
+    inputs. Disclosure, Public Verification, Human Gate, and Human Decision record construction
+    is deterministic; verification semantics remain
     caller-supplied and are adapter-qualified against the authoritative chain. The function
     never executes a model/provider call or external transport, never generates verification
     findings, never chooses a Human decision, and never performs a state transition.
@@ -370,9 +373,14 @@ def compose_top_level_workflow(
     """
 
     run = _qualified_frozen_run(run_record)
+    constructed_disclosure = disclosure.build_disclosure(
+        classification=disclosure_classification,
+        findings=disclosure_findings,
+        observational_metadata=disclosure_observational_metadata,
+    )
     context = cloud_boundary.admit_cloud_context(
         bounded_context_record,
-        disclosure_record,
+        constructed_disclosure,
         run_identity=run.run_identity,
         mr03_package_identity=run.mr03_result_identity,
         mr04_result_identity=run.mr04_result_identity,
@@ -459,7 +467,7 @@ def compose_top_level_workflow(
     evidence_args = {
         "run_record": run,
         "bounded_context_record": bounded_context_record,
-        "disclosure_record": disclosure_record,
+        "disclosure_record": constructed_disclosure,
         "cloud_context_record": context,
         "cloud_request_record": request,
         "proposal_record": admitted_proposal,

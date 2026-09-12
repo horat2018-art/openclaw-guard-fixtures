@@ -35,9 +35,17 @@ class WorkflowRuntimeTests(unittest.TestCase):
     def _compose(chain, **overrides):
         raw, transport_metadata = WorkflowRuntimeTests._transport(chain)
         verification = chain["verification"]
+        disclosure_record = chain["disclosure"]
         args = {
             "run_record": chain["run"], "bounded_context_record": chain["bounded_context"],
-            "disclosure_record": chain["disclosure"], "metrics_record": chain["metric"],
+            "disclosure_classification": disclosure_record.classification,
+            "disclosure_findings": tuple(item.to_dict() for item in disclosure_record.findings),
+            "disclosure_observational_metadata": (
+                None
+                if disclosure_record.observational_metadata is None
+                else dict(disclosure_record.observational_metadata)
+            ),
+            "metrics_record": chain["metric"],
             "model_identifier": "openai/gpt-5.6-luna",
             "human_authorization_reference": "human-auth:final-result-fixture",
             "estimated_token_metadata": _final_fixture_module.FinalResultRuntimeTests._token_metadata(),
@@ -210,6 +218,25 @@ class WorkflowRuntimeTests(unittest.TestCase):
             composed = self._compose(chain)
         delegated.assert_called_once()
         self.assertEqual(composed.proposal_record, chain["proposal"])
+
+    def test_disclosure_builder_is_exact_single_delegation(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        original = disclosure.build_disclosure
+        with mock.patch.object(
+            disclosure,
+            "build_disclosure",
+            side_effect=original,
+        ) as delegated:
+            composed = self._compose(chain)
+        delegated.assert_called_once()
+        call = delegated.call_args
+        self.assertFalse(call.args)
+        self.assertEqual(call.kwargs["classification"], chain["disclosure"].classification)
+        self.assertEqual(
+            call.kwargs["findings"],
+            tuple(item.to_dict() for item in chain["disclosure"].findings),
+        )
+        self.assertEqual(composed.cloud_context_record.disclosure_result, "ALLOW")
 
     def test_public_verification_builder_is_exact_single_delegation_and_adapter_receives_it(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
@@ -537,8 +564,9 @@ class WorkflowRuntimeTests(unittest.TestCase):
             )
 
     def test_disclosure_denial_fails_before_cloud_request_composition(self):
-        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain(); denied = disclosure.build_disclosure(classification="INTERNAL")
-        with self.assertRaises(cloud_boundary.CloudContextAdmissionValidationError): self._compose(chain, disclosure_record=denied)
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        with self.assertRaises(cloud_boundary.CloudContextAdmissionValidationError):
+            self._compose(chain, disclosure_classification="INTERNAL")
 
     def test_composition_is_repeatable_and_has_zero_execution_authority(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain(); first = self._compose(chain); second = self._compose(chain)
@@ -554,6 +582,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertNotIn("human_gate_record", signature.parameters)
         self.assertNotIn("human_decision_record", signature.parameters)
         self.assertNotIn("verification_record", signature.parameters)
+        self.assertNotIn("disclosure_record", signature.parameters)
         for name in (
             "authorized_provider_identifier",
             "authorized_account_boundary_reference",
@@ -567,6 +596,9 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "error_metadata",
             "human_authorization_reference",
             "model_identifier",
+            "disclosure_classification",
+            "disclosure_findings",
+            "disclosure_observational_metadata",
             "verification_result",
             "verification_reason_codes",
             "verification_reason_details",
