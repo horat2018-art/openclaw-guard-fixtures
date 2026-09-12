@@ -41,6 +41,10 @@ CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_ID = "mr05.cloud_execution_authorization"
 CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_VERSION = SCHEMA_VERSION
 CLOUD_EXECUTION_AUTHORIZATION_POLICY_VERSION = SCHEMA_VERSION
 CLOUD_EXECUTION_RETRY_POLICY = "ZERO_BY_DEFAULT"
+CLOUD_EXECUTION_HANDOFF_SCHEMA_ID = "mr05.cloud_execution_handoff"
+CLOUD_EXECUTION_HANDOFF_SCHEMA_VERSION = SCHEMA_VERSION
+CLOUD_EXECUTION_HANDOFF_POLICY_VERSION = SCHEMA_VERSION
+CLOUD_EXECUTION_HANDOFF_EXECUTION_AUTHORITY = "NONE"
 CLOUD_RESPONSE_SCHEMA_ID = "mr05.cloud_response"
 CLOUD_RESPONSE_SCHEMA_VERSION = SCHEMA_VERSION
 CLOUD_REQUEST_REASONING_METADATA = MappingProxyType(
@@ -67,6 +71,7 @@ DEPENDENCY_EXECUTION_IMPLEMENTATION_COUNT = 0
 EVIDENCE_PERSISTENCE_COUNT = 0
 CLOUD_REQUEST_BUILD_COUNT = 1
 CLOUD_EXECUTION_AUTHORIZATION_BUILD_COUNT = 1
+CLOUD_EXECUTION_HANDOFF_BUILD_COUNT = 1
 CLOUD_RESPONSE_RECORD_BUILD_COUNT = 1
 CLOUD_RESPONSE_BINDING_VALIDATION_COUNT = 1
 GOVERNED_EXTERNAL_TRANSPORT_ADAPTER_IMPLEMENTATION_COUNT = 1
@@ -180,6 +185,37 @@ CLOUD_EXECUTION_AUTHORIZATION_IDENTITY_PREIMAGE = (
     "fallback_allowed",
     "model_switch_allowed",
     "human_authorization_reference",
+)
+
+_CLOUD_EXECUTION_HANDOFF_REQUIRED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "handoff_policy_version",
+        "run_identity",
+        "context_identity",
+        "request_identity",
+        "authorization_identity",
+        "model_identifier",
+        "provider_identifier",
+        "account_boundary_reference",
+        "human_authorization_reference",
+        "execution_authority",
+        "handoff_identity",
+    }
+)
+_CLOUD_EXECUTION_HANDOFF_OPTIONAL_FIELDS = frozenset({"observational_metadata"})
+CLOUD_EXECUTION_HANDOFF_IDENTITY_PREIMAGE = (
+    "schema_version",
+    "handoff_policy_version",
+    "run_identity",
+    "context_identity",
+    "request_identity",
+    "authorization_identity",
+    "model_identifier",
+    "provider_identifier",
+    "account_boundary_reference",
+    "human_authorization_reference",
+    "execution_authority",
 )
 
 _CLOUD_RESPONSE_REQUIRED_FIELDS = frozenset(
@@ -1112,6 +1148,133 @@ CloudExecutionAuthorizationValidationError = CloudContextAdmissionValidationErro
 
 
 @dataclass(frozen=True, slots=True)
+class CloudExecutionHandoff:
+    """Pure-data handoff binding for one validated request/authorization pair.
+
+    This record grants no execution authority and contains no credential material.
+    """
+
+    schema_version: str
+    handoff_policy_version: str
+    run_identity: str
+    context_identity: str
+    request_identity: str
+    authorization_identity: str
+    model_identifier: str
+    provider_identifier: str
+    account_boundary_reference: str
+    human_authorization_reference: str
+    execution_authority: str
+    handoff_identity: str
+    observational_metadata: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            validate_schema_version(CLOUD_EXECUTION_HANDOFF_SCHEMA_ID, self.schema_version)
+        except UnknownSchemaMajorVersionError as exc:
+            _fail(str(exc), FailureCode.MR05_UNKNOWN_SCHEMA_MAJOR)
+        except (UnsupportedSchemaVersionError, TypeError, ValueError) as exc:
+            _fail(str(exc))
+        if self.handoff_policy_version != CLOUD_EXECUTION_HANDOFF_POLICY_VERSION:
+            _fail("handoff_policy_version is not frozen", FailureCode.MR05_MODEL_UNAUTHORIZED)
+        if self.execution_authority != CLOUD_EXECUTION_HANDOFF_EXECUTION_AUTHORITY:
+            _fail("execution_authority must remain NONE", FailureCode.MR05_MODEL_UNAUTHORIZED)
+
+        run_identity = _sha(self.run_identity, "run_identity")
+        context_identity = _sha(self.context_identity, "context_identity")
+        request_identity = _sha(self.request_identity, "request_identity")
+        authorization_identity = _sha(self.authorization_identity, "authorization_identity")
+        model_identifier = _text(self.model_identifier, "model_identifier", maximum=256)
+        provider_identifier = _text(self.provider_identifier, "provider_identifier", maximum=256)
+        account_boundary_reference = _text(
+            self.account_boundary_reference, "account_boundary_reference", maximum=2048
+        )
+        human_authorization_reference = _human_authorization_reference(
+            self.human_authorization_reference
+        )
+        observational_metadata = _observational_metadata(self.observational_metadata)
+
+        object.__setattr__(self, "schema_version", CLOUD_EXECUTION_HANDOFF_SCHEMA_VERSION)
+        object.__setattr__(self, "handoff_policy_version", CLOUD_EXECUTION_HANDOFF_POLICY_VERSION)
+        object.__setattr__(self, "run_identity", run_identity)
+        object.__setattr__(self, "context_identity", context_identity)
+        object.__setattr__(self, "request_identity", request_identity)
+        object.__setattr__(self, "authorization_identity", authorization_identity)
+        object.__setattr__(self, "model_identifier", model_identifier)
+        object.__setattr__(self, "provider_identifier", provider_identifier)
+        object.__setattr__(self, "account_boundary_reference", account_boundary_reference)
+        object.__setattr__(self, "human_authorization_reference", human_authorization_reference)
+        object.__setattr__(self, "execution_authority", CLOUD_EXECUTION_HANDOFF_EXECUTION_AUTHORITY)
+        object.__setattr__(self, "observational_metadata", observational_metadata)
+
+        declared_identity = _sha(self.handoff_identity, "handoff_identity")
+        try:
+            computed_identity = sha256_canonical(self.identity_payload)
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            _fail(str(exc), FailureCode.MR05_MODEL_UNAUTHORIZED)
+        if declared_identity != computed_identity:
+            _fail(
+                "handoff_identity does not match frozen handoff semantics",
+                FailureCode.HASH_MISMATCH,
+            )
+        object.__setattr__(self, "handoff_identity", declared_identity)
+
+    @property
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "handoff_policy_version": self.handoff_policy_version,
+            "run_identity": self.run_identity,
+            "context_identity": self.context_identity,
+            "request_identity": self.request_identity,
+            "authorization_identity": self.authorization_identity,
+            "model_identifier": self.model_identifier,
+            "provider_identifier": self.provider_identifier,
+            "account_boundary_reference": self.account_boundary_reference,
+            "human_authorization_reference": self.human_authorization_reference,
+            "execution_authority": self.execution_authority,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        out = dict(self.identity_payload)
+        out["handoff_identity"] = self.handoff_identity
+        if self.observational_metadata is not None:
+            out["observational_metadata"] = _plain(self.observational_metadata)
+        return out
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict(), identity_critical=False)
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "CloudExecutionHandoff":
+        row = _mapping(value, "cloud execution handoff")
+        _exact_fields(
+            row,
+            _CLOUD_EXECUTION_HANDOFF_REQUIRED_FIELDS,
+            "cloud execution handoff",
+            _CLOUD_EXECUTION_HANDOFF_OPTIONAL_FIELDS,
+        )
+        return cls(
+            schema_version=row["schema_version"],
+            handoff_policy_version=row["handoff_policy_version"],
+            run_identity=row["run_identity"],
+            context_identity=row["context_identity"],
+            request_identity=row["request_identity"],
+            authorization_identity=row["authorization_identity"],
+            model_identifier=row["model_identifier"],
+            provider_identifier=row["provider_identifier"],
+            account_boundary_reference=row["account_boundary_reference"],
+            human_authorization_reference=row["human_authorization_reference"],
+            execution_authority=row["execution_authority"],
+            handoff_identity=row["handoff_identity"],
+            observational_metadata=row.get("observational_metadata"),
+        )
+
+
+CloudExecutionHandoffValidationError = CloudContextAdmissionValidationError
+
+
+@dataclass(frozen=True, slots=True)
 class CloudResponse:
     """Pure-data record of one untrusted provider response transport envelope."""
 
@@ -1474,6 +1637,109 @@ def validate_cloud_execution_authorization(
     return record
 
 
+def build_cloud_execution_handoff(
+    cloud_request: CloudRequest | Mapping[str, object],
+    authorization: CloudExecutionAuthorization | Mapping[str, object],
+    *,
+    observational_metadata: Mapping[str, object] | None = None,
+) -> CloudExecutionHandoff:
+    """Build a read-only external handoff binding without executing transport."""
+
+    request = (
+        cloud_request
+        if isinstance(cloud_request, CloudRequest)
+        else CloudRequest.from_mapping(cloud_request)
+    )
+    authorized = validate_cloud_execution_authorization(authorization, request)
+    semantic = {
+        "schema_version": CLOUD_EXECUTION_HANDOFF_SCHEMA_VERSION,
+        "handoff_policy_version": CLOUD_EXECUTION_HANDOFF_POLICY_VERSION,
+        "run_identity": request.run_identity,
+        "context_identity": request.context_identity,
+        "request_identity": request.request_identity,
+        "authorization_identity": authorized.authorization_identity,
+        "model_identifier": request.model_identifier,
+        "provider_identifier": authorized.provider_identifier,
+        "account_boundary_reference": authorized.account_boundary_reference,
+        "human_authorization_reference": authorized.human_authorization_reference,
+        "execution_authority": CLOUD_EXECUTION_HANDOFF_EXECUTION_AUTHORITY,
+    }
+    try:
+        handoff_identity = sha256_canonical(semantic)
+    except (CanonicalizationError, TypeError, ValueError) as exc:
+        _fail(str(exc), FailureCode.MR05_MODEL_UNAUTHORIZED)
+    return CloudExecutionHandoff(
+        **semantic,
+        handoff_identity=handoff_identity,
+        observational_metadata=observational_metadata,
+    )
+
+
+def compute_cloud_execution_handoff_identity(
+    value: CloudExecutionHandoff | Mapping[str, object],
+) -> str:
+    """Recompute the exact deterministic handoff identity."""
+
+    record = (
+        value
+        if isinstance(value, CloudExecutionHandoff)
+        else CloudExecutionHandoff.from_mapping(value)
+    )
+    return sha256_canonical(record.identity_payload)
+
+
+def canonical_cloud_execution_handoff_bytes(
+    value: CloudExecutionHandoff | Mapping[str, object],
+) -> bytes:
+    """Return complete canonical handoff bytes after exact validation."""
+
+    record = (
+        value
+        if isinstance(value, CloudExecutionHandoff)
+        else CloudExecutionHandoff.from_mapping(value)
+    )
+    return record.canonical_bytes()
+
+
+def validate_cloud_execution_handoff(
+    handoff: CloudExecutionHandoff | Mapping[str, object],
+    cloud_request: CloudRequest | Mapping[str, object],
+    authorization: CloudExecutionAuthorization | Mapping[str, object],
+) -> CloudExecutionHandoff:
+    """Fail closed unless the handoff binds the exact request and authorization."""
+
+    request = (
+        cloud_request
+        if isinstance(cloud_request, CloudRequest)
+        else CloudRequest.from_mapping(cloud_request)
+    )
+    authorized = validate_cloud_execution_authorization(authorization, request)
+    record = (
+        handoff
+        if isinstance(handoff, CloudExecutionHandoff)
+        else CloudExecutionHandoff.from_mapping(handoff)
+    )
+    expected = {
+        "run_identity": request.run_identity,
+        "context_identity": request.context_identity,
+        "request_identity": request.request_identity,
+        "authorization_identity": authorized.authorization_identity,
+        "model_identifier": request.model_identifier,
+        "provider_identifier": authorized.provider_identifier,
+        "account_boundary_reference": authorized.account_boundary_reference,
+        "human_authorization_reference": authorized.human_authorization_reference,
+    }
+    for field, expected_value in expected.items():
+        if getattr(record, field) != expected_value:
+            _fail(
+                f"execution handoff {field} is not bound to the exact request/authorization",
+                FailureCode.MR05_MODEL_UNAUTHORIZED,
+            )
+    if record.execution_authority != CLOUD_EXECUTION_HANDOFF_EXECUTION_AUTHORITY:
+        _fail("execution handoff grants forbidden execution authority", FailureCode.MR05_MODEL_UNAUTHORIZED)
+    return record
+
+
 def build_cloud_response_record(
     cloud_request: CloudRequest | Mapping[str, object],
     authorization: CloudExecutionAuthorization | Mapping[str, object],
@@ -1629,6 +1895,10 @@ __all__ = (
     "CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_VERSION",
     "CLOUD_EXECUTION_AUTHORIZATION_POLICY_VERSION",
     "CLOUD_EXECUTION_RETRY_POLICY",
+    "CLOUD_EXECUTION_HANDOFF_SCHEMA_ID",
+    "CLOUD_EXECUTION_HANDOFF_SCHEMA_VERSION",
+    "CLOUD_EXECUTION_HANDOFF_POLICY_VERSION",
+    "CLOUD_EXECUTION_HANDOFF_EXECUTION_AUTHORITY",
     "CLOUD_RESPONSE_SCHEMA_ID",
     "CLOUD_RESPONSE_SCHEMA_VERSION",
     "CLOUD_REQUEST_REASONING_METADATA",
@@ -1652,6 +1922,7 @@ __all__ = (
     "EVIDENCE_PERSISTENCE_COUNT",
     "CLOUD_REQUEST_BUILD_COUNT",
     "CLOUD_EXECUTION_AUTHORIZATION_BUILD_COUNT",
+    "CLOUD_EXECUTION_HANDOFF_BUILD_COUNT",
     "CLOUD_RESPONSE_RECORD_BUILD_COUNT",
     "CLOUD_RESPONSE_BINDING_VALIDATION_COUNT",
     "GOVERNED_EXTERNAL_TRANSPORT_ADAPTER_IMPLEMENTATION_COUNT",
@@ -1662,6 +1933,7 @@ __all__ = (
     "CLOUD_CONTEXT_IDENTITY_PREIMAGE",
     "CLOUD_REQUEST_IDENTITY_PREIMAGE",
     "CLOUD_EXECUTION_AUTHORIZATION_IDENTITY_PREIMAGE",
+    "CLOUD_EXECUTION_HANDOFF_IDENTITY_PREIMAGE",
     "CLOUD_RESPONSE_IDENTITY_PREIMAGE",
     "CloudContextAdmissionValidationError",
     "CloudContextValidationError",
@@ -1671,6 +1943,8 @@ __all__ = (
     "CloudRequest",
     "CloudExecutionAuthorizationValidationError",
     "CloudExecutionAuthorization",
+    "CloudExecutionHandoffValidationError",
+    "CloudExecutionHandoff",
     "CloudResponseValidationError",
     "CloudResponse",
     "admit_cloud_context",
@@ -1683,6 +1957,10 @@ __all__ = (
     "build_cloud_execution_authorization",
     "compute_cloud_execution_authorization_identity",
     "validate_cloud_execution_authorization",
+    "build_cloud_execution_handoff",
+    "compute_cloud_execution_handoff_identity",
+    "canonical_cloud_execution_handoff_bytes",
+    "validate_cloud_execution_handoff",
     "build_cloud_response_record",
     "compute_cloud_response_identity",
     "canonical_cloud_response_bytes",

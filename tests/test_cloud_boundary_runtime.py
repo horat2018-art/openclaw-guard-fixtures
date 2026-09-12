@@ -859,6 +859,99 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             ):
                 cloud_boundary.CloudExecutionAuthorization.from_mapping(candidate)
 
+    def test_execution_handoff_binds_exact_request_authorization_without_execution_authority(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://mr16a/r1",
+        )
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        handoff = cloud_boundary.build_cloud_execution_handoff(
+            request,
+            authorization,
+            observational_metadata={"note": "handoff-only"},
+        )
+        self.assertEqual(handoff.schema_version, "1.0.0")
+        self.assertEqual(handoff.handoff_policy_version, "1.0.0")
+        self.assertEqual(handoff.execution_authority, "NONE")
+        self.assertEqual(handoff.request_identity, request.request_identity)
+        self.assertEqual(handoff.authorization_identity, authorization.authorization_identity)
+        self.assertEqual(handoff.provider_identifier, authorization.provider_identifier)
+        self.assertEqual(handoff.account_boundary_reference, authorization.account_boundary_reference)
+        self.assertEqual(
+            tuple(handoff.identity_payload),
+            cloud_boundary.CLOUD_EXECUTION_HANDOFF_IDENTITY_PREIMAGE,
+        )
+        self.assertEqual(handoff.handoff_identity, identity.sha256_canonical(handoff.identity_payload))
+        self.assertEqual(
+            cloud_boundary.compute_cloud_execution_handoff_identity(handoff),
+            handoff.handoff_identity,
+        )
+        self.assertEqual(
+            cloud_boundary.canonical_cloud_execution_handoff_bytes(handoff),
+            handoff.canonical_bytes(),
+        )
+        self.assertIs(
+            cloud_boundary.validate_cloud_execution_handoff(handoff, request, authorization),
+            handoff,
+        )
+        self.assertNotIn("observational_metadata", handoff.identity_payload)
+        self.assertEqual(
+            cloud_boundary.SCHEMA_VERSIONS["mr05.cloud_execution_handoff"],
+            "1.0.0",
+        )
+        for name in (
+            "NETWORK_IMPLEMENTATION_COUNT",
+            "PROVIDER_CLIENT_IMPLEMENTATION_COUNT",
+            "MODEL_CALL_IMPLEMENTATION_COUNT",
+            "AUTH_IMPLEMENTATION_COUNT",
+            "EXTERNAL_TRANSPORT_EXECUTION_COUNT",
+            "LIVE_CLOUD_EXECUTION_COUNT",
+        ):
+            self.assertEqual(getattr(cloud_boundary, name), 0, name)
+
+    def test_execution_handoff_fails_closed_on_cross_binding_forgery_and_secret_fields(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://mr16a/r1",
+        )
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        handoff = cloud_boundary.build_cloud_execution_handoff(request, authorization)
+        forged = copy.deepcopy(handoff.to_dict())
+        forged["execution_authority"] = "EXECUTE"
+        forged["handoff_identity"] = identity.sha256_canonical(
+            {key: forged[key] for key in cloud_boundary.CLOUD_EXECUTION_HANDOFF_IDENTITY_PREIMAGE}
+        )
+        with self.assertRaises(cloud_boundary.CloudExecutionHandoffValidationError):
+            cloud_boundary.CloudExecutionHandoff.from_mapping(forged)
+        for forbidden in ("api_token", "credential_secret", "authorization_header"):
+            candidate = copy.deepcopy(handoff.to_dict())
+            candidate[forbidden] = "forbidden-secret-material"
+            with self.subTest(forbidden=forbidden), self.assertRaises(
+                cloud_boundary.CloudExecutionHandoffValidationError
+            ):
+                cloud_boundary.CloudExecutionHandoff.from_mapping(candidate)
+        other_authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-b",
+            account_boundary_reference="account://boundary-b",
+        )
+        with self.assertRaises(cloud_boundary.CloudExecutionHandoffValidationError):
+            cloud_boundary.validate_cloud_execution_handoff(
+                handoff, request, other_authorization
+            )
+
     def test_cloud_response_identity_binds_raw_bytes_request_and_attempt_only(self):
         context = self._admit(self._context_package())
         request = cloud_boundary.build_cloud_request(

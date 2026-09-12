@@ -99,12 +99,16 @@ class BoundaryTests(unittest.TestCase):
                         self.assertNotIn(token, text)
                 self.assertIn('CLOUD_CONTEXT_ADMISSION_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('CLOUD_EXECUTION_AUTHORIZATION_BUILD_COUNT = 1', text)
+                self.assertIn('CLOUD_EXECUTION_HANDOFF_BUILD_COUNT = 1', text)
                 self.assertIn('CLOUD_RESPONSE_RECORD_BUILD_COUNT = 1', text)
                 self.assertIn('CLOUD_RESPONSE_BINDING_VALIDATION_COUNT = 1', text)
                 self.assertIn('GOVERNED_EXTERNAL_TRANSPORT_ADAPTER_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('EXTERNAL_TRANSPORT_EXECUTION_COUNT = 0', text)
                 self.assertIn('class CloudExecutionAuthorization:', text)
+                self.assertIn('class CloudExecutionHandoff:', text)
                 self.assertIn('class CloudResponse:', text)
+                self.assertIn('def build_cloud_execution_handoff(', text)
+                self.assertIn('def validate_cloud_execution_handoff(', text)
                 self.assertIn('def adapt_governed_external_transport_response(', text)
                 for name in (
                     'FILESYSTEM_SOURCE_READ_COUNT = 0',

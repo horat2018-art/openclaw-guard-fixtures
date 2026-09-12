@@ -39,6 +39,7 @@ SCHEMA_VERSIONS: Mapping[str, str] = MappingProxyType(
         "mr05.claim": "1.0.0",
         "mr05.cloud_context": "1.0.0",
         "mr05.cloud_execution_authorization": "1.0.0",
+        "mr05.cloud_execution_handoff": "1.0.0",
         "mr05.cloud_proposal": "1.0.0",
         "mr05.cloud_request": "1.0.0",
         "mr05.cloud_response": "1.0.0",
