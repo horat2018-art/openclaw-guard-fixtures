@@ -275,6 +275,22 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(call.args[2], composed.cloud_execution_handoff_record)
         self.assertEqual(composed.proposal_record, chain["proposal"])
 
+    def test_proposal_admission_is_exact_single_delegation_and_receives_handoff(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        original = proposal.admit_cloud_response_proposal
+        with mock.patch.object(
+            proposal,
+            "admit_cloud_response_proposal",
+            side_effect=original,
+        ) as delegated:
+            composed = self._compose(chain)
+        delegated.assert_called_once()
+        call = delegated.call_args
+        self.assertEqual(call.args[1], composed.cloud_response_record)
+        self.assertEqual(call.args[2], composed.cloud_request_record)
+        self.assertEqual(call.args[3], composed.cloud_execution_authorization_record)
+        self.assertEqual(call.args[4], composed.cloud_execution_handoff_record)
+
     def test_disclosure_builder_is_exact_single_delegation(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
         original = disclosure.build_disclosure

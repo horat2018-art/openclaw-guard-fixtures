@@ -143,6 +143,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('PROPOSAL_IDENTITY_VALIDATION_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('CLOUD_RESPONSE_PROPOSAL_ADMISSION_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('def admit_cloud_response_proposal(', text)
+                self.assertEqual(text.count('cloud_boundary.validate_cloud_execution_handoff('), 1)
                 for name in (
                     'FILESYSTEM_SOURCE_READ_COUNT = 0',
                     'FILESYSTEM_WRITE_IMPLEMENTATION_COUNT = 0',
@@ -218,7 +219,7 @@ class BoundaryTests(unittest.TestCase):
                 )
                 self.assertNotIn('cloud_boundary.validate_cloud_response_binding(', text)
                 self.assertNotIn('cloud_boundary.build_cloud_response_record(', text)
-                self.assertIn('proposal.admit_cloud_response_proposal(', text)
+                self.assertEqual(text.count('proposal.admit_cloud_response_proposal('), 1)
                 self.assertEqual(text.count('disclosure.build_disclosure('), 1)
                 self.assertEqual(text.count('metrics.build_metrics('), 1)
                 self.assertEqual(text.count('verifier.build_verifier_result('), 1)

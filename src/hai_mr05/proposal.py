@@ -547,6 +547,7 @@ def admit_cloud_response_proposal(
     response: object,
     cloud_request: object,
     authorization: object,
+    handoff: object,
 ) -> CloudProposal:
     from . import cloud_boundary
 
@@ -554,6 +555,9 @@ def admit_cloud_response_proposal(
         cloud_request
         if isinstance(cloud_request, cloud_boundary.CloudRequest)
         else cloud_boundary.CloudRequest.from_mapping(cloud_request)
+    )
+    cloud_boundary.validate_cloud_execution_handoff(
+        handoff, request, authorization
     )
     bound_response = cloud_boundary.validate_cloud_response_binding(
         response, request, authorization

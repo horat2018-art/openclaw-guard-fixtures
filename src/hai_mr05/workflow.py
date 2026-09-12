@@ -485,7 +485,7 @@ def compose_top_level_workflow(
         error_metadata=error_metadata,
     )
     admitted_proposal = proposal.admit_cloud_response_proposal(
-        raw_provider_response, response, request, authorization
+        raw_provider_response, response, request, authorization, handoff
     )
     _validate_remaining_proposal_bindings(admitted_proposal, run=run)
     constructed_verification = verifier.build_verification_record(
