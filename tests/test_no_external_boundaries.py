@@ -163,6 +163,7 @@ class BoundaryTests(unittest.TestCase):
                         self.assertNotIn(token, text)
                 self.assertIn('VERIFIER_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('VERIFICATION_RECORD_PARSE_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('VERIFICATION_RECORD_BUILD_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('VERIFICATION_IDENTITY_VALIDATION_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('VERIFICATION_ADAPTER_VALIDATION_IMPLEMENTATION_COUNT = 1', text)
                 for name in (

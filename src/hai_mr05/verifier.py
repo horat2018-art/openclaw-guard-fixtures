@@ -1250,6 +1250,7 @@ VERIFICATION_RECORD_IDENTITY_PREIMAGE = (
 )
 
 VERIFICATION_RECORD_PARSE_IMPLEMENTATION_COUNT = 1
+VERIFICATION_RECORD_BUILD_IMPLEMENTATION_COUNT = 1
 VERIFICATION_IDENTITY_VALIDATION_IMPLEMENTATION_COUNT = 1
 VERIFICATION_ADAPTER_VALIDATION_IMPLEMENTATION_COUNT = 1
 MR04_VERIFIER_EXECUTION_IMPLEMENTATION_COUNT = 0
@@ -1781,6 +1782,50 @@ class VerificationRecord:
         )
 
 
+def build_verification_record(
+    *,
+    proposal: object,
+    verification_result: object,
+    reason_codes: object,
+    reason_details: object,
+    verified_source_refs: object,
+    unsupported_claims: object,
+    missing_refs: object,
+    protected_content_findings: object,
+    identity_findings: object,
+    observational_metadata: Mapping[str, object] | None = None,
+) -> VerificationRecord:
+    """Bind explicit public-verification semantics to one exact proposal identity.
+
+    This builder canonicalizes only caller-supplied semantic material. It does not
+    discover evidence, generate findings, choose a verification result, or execute
+    the legacy verifier. Cross-record semantic qualification remains the adapter's job.
+    """
+
+    semantic = {
+        "schema_version": PUBLIC_VERIFICATION_SCHEMA_VERSION,
+        "proposal_identity": _sha(
+            _record_value(proposal, "proposal_identity"), "proposal.proposal_identity"
+        ),
+        "verification_result": verification_result,
+        "reason_codes": reason_codes,
+        "reason_details": reason_details,
+        "verified_source_refs": verified_source_refs,
+        "unsupported_claims": unsupported_claims,
+        "missing_refs": missing_refs,
+        "protected_content_findings": protected_content_findings,
+        "identity_findings": identity_findings,
+        "verification_policy_version": PUBLIC_VERIFICATION_POLICY_VERSION,
+    }
+    normalized = _normalize_public_verification_semantics(semantic)
+    identity_payload = _public_verification_payload(normalized)
+    record_payload = dict(identity_payload)
+    record_payload["verification_identity"] = sha256_canonical(identity_payload)
+    if observational_metadata is not None:
+        record_payload["observational_metadata"] = observational_metadata
+    return VerificationRecord.from_mapping(record_payload)
+
+
 def parse_verification_record(value: VerificationRecord | Mapping[str, object]) -> VerificationRecord:
     if isinstance(value, VerificationRecord):
         return value
@@ -2102,6 +2147,7 @@ __all__ = (
     "PUBLIC_VERIFICATION_POLICY_VERSION",
     "VERIFICATION_RECORD_IDENTITY_PREIMAGE",
     "VERIFICATION_RECORD_PARSE_IMPLEMENTATION_COUNT",
+    "VERIFICATION_RECORD_BUILD_IMPLEMENTATION_COUNT",
     "VERIFICATION_IDENTITY_VALIDATION_IMPLEMENTATION_COUNT",
     "VERIFICATION_ADAPTER_VALIDATION_IMPLEMENTATION_COUNT",
     "MR04_VERIFIER_EXECUTION_IMPLEMENTATION_COUNT",
@@ -2114,6 +2160,7 @@ __all__ = (
     "VerificationProtectedContentFinding",
     "VerificationIdentityFinding",
     "VerificationRecord",
+    "build_verification_record",
     "parse_verification_record",
     "parse_verification_json",
     "verification_identity_from_preimage",

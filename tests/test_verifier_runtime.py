@@ -175,6 +175,72 @@ class VerificationRuntimeTests(unittest.TestCase):
             verifier.canonical_verification_bytes(record), record.canonical_bytes()
         )
 
+    def test_builder_binds_explicit_semantics_to_exact_proposal_identity(self):
+        semantic = _semantic_pass()
+        record = verifier.build_verification_record(
+            proposal=_proposal(),
+            verification_result=semantic["verification_result"],
+            reason_codes=semantic["reason_codes"],
+            reason_details=semantic["reason_details"],
+            verified_source_refs=semantic["verified_source_refs"],
+            unsupported_claims=semantic["unsupported_claims"],
+            missing_refs=semantic["missing_refs"],
+            protected_content_findings=semantic["protected_content_findings"],
+            identity_findings=semantic["identity_findings"],
+        )
+        expected = verifier.VerificationRecord.from_mapping(_record_from_semantic(semantic))
+        self.assertEqual(record, expected)
+        self.assertEqual(record.proposal_identity, PROPOSAL)
+        self.assertEqual(record.verification_identity, expected.verification_identity)
+
+    def test_builder_preserves_semantic_material_and_excludes_observation_from_identity(self):
+        failure = _unsupported_failure()
+        semantic = _semantic_deny(failure)
+        base = verifier.build_verification_record(
+            proposal=_proposal(),
+            verification_result=semantic["verification_result"],
+            reason_codes=semantic["reason_codes"],
+            reason_details=semantic["reason_details"],
+            verified_source_refs=semantic["verified_source_refs"],
+            unsupported_claims=semantic["unsupported_claims"],
+            missing_refs=semantic["missing_refs"],
+            protected_content_findings=semantic["protected_content_findings"],
+            identity_findings=semantic["identity_findings"],
+        )
+        observed = verifier.build_verification_record(
+            proposal=_proposal(),
+            verification_result=semantic["verification_result"],
+            reason_codes=semantic["reason_codes"],
+            reason_details=semantic["reason_details"],
+            verified_source_refs=semantic["verified_source_refs"],
+            unsupported_claims=semantic["unsupported_claims"],
+            missing_refs=semantic["missing_refs"],
+            protected_content_findings=semantic["protected_content_findings"],
+            identity_findings=semantic["identity_findings"],
+            observational_metadata={"ratio": 1.5},
+        )
+        self.assertEqual(observed.verification_identity, base.verification_identity)
+        self.assertEqual(observed.reason_details, base.reason_details)
+        self.assertEqual(observed.unsupported_claims, ("claim-1",))
+        self.assertEqual(observed.to_dict()["observational_metadata"]["ratio"], 1.5)
+
+    def test_builder_rejects_unqualified_proposal_identity(self):
+        proposal = _proposal()
+        proposal["proposal_identity"] = "not-a-sha256"
+        semantic = _semantic_pass()
+        with self.assertRaises(verifier.VerifierValidationError):
+            verifier.build_verification_record(
+                proposal=proposal,
+                verification_result=semantic["verification_result"],
+                reason_codes=semantic["reason_codes"],
+                reason_details=semantic["reason_details"],
+                verified_source_refs=semantic["verified_source_refs"],
+                unsupported_claims=semantic["unsupported_claims"],
+                missing_refs=semantic["missing_refs"],
+                protected_content_findings=semantic["protected_content_findings"],
+                identity_findings=semantic["identity_findings"],
+            )
+
     def test_json_parser_rejects_duplicate_keys_and_explicit_null_metadata(self):
         mapping = _record_from_semantic(_semantic_pass())
         duplicate = '{"schema_version":"1.0.0",' + json.dumps(mapping)[1:]
@@ -346,6 +412,7 @@ class VerificationRuntimeTests(unittest.TestCase):
 
     def test_public_boundary_has_zero_operational_authority(self):
         self.assertEqual(verifier.VERIFICATION_RECORD_PARSE_IMPLEMENTATION_COUNT, 1)
+        self.assertEqual(verifier.VERIFICATION_RECORD_BUILD_IMPLEMENTATION_COUNT, 1)
         self.assertEqual(verifier.VERIFICATION_IDENTITY_VALIDATION_IMPLEMENTATION_COUNT, 1)
         self.assertEqual(verifier.VERIFICATION_ADAPTER_VALIDATION_IMPLEMENTATION_COUNT, 1)
         for name in (
