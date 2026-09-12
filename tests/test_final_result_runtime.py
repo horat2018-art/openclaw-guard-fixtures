@@ -352,6 +352,77 @@ class FinalResultRuntimeTests(unittest.TestCase):
             self.assertEqual(observed.final_result_content_sha256,hashlib.sha256(final_bytes).hexdigest())
             self.assertFalse(observed.human_approval or observed.state_transition_authority or observed.source_write_authority or observed.git_authority or observed.model_provider_authority)
 
+    def test_final_evidence_readback_audit_accepts_exact_persisted_bytes(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            observed=evidence.persist_final_evidence_records(
+                approved_root=tmp,manifest_relative_path="manifest.json",final_result_relative_path="final.json",
+                manifest=manifest,final_result=final,**self._evidence_args(chain),
+            )
+            audited=evidence.audit_persisted_final_evidence_records(
+                approved_root=tmp,persistence_result=observed,manifest=manifest,final_result=final,
+                **self._evidence_args(chain),
+            )
+            self.assertEqual(audited.run_identity,manifest.run_identity)
+            self.assertEqual(audited.manifest_identity,manifest.manifest_identity)
+            self.assertEqual(audited.final_result_identity,final.final_result_identity)
+            self.assertEqual(audited.manifest_content_sha256,observed.manifest_content_sha256)
+            self.assertEqual(audited.final_result_content_sha256,observed.final_result_content_sha256)
+            self.assertFalse(audited.filesystem_write_authority)
+
+    def test_final_evidence_readback_audit_rejects_manifest_or_final_tamper(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        for target in ("manifest.json","final.json"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmp:
+                observed=evidence.persist_final_evidence_records(
+                    approved_root=tmp,manifest_relative_path="manifest.json",final_result_relative_path="final.json",
+                    manifest=manifest,final_result=final,**self._evidence_args(chain),
+                )
+                path=Path(tmp,target); raw=path.read_bytes(); path.write_bytes(bytes([raw[0] ^ 1])+raw[1:])
+                with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+                    evidence.audit_persisted_final_evidence_records(
+                        approved_root=tmp,persistence_result=observed,manifest=manifest,final_result=final,
+                        **self._evidence_args(chain),
+                    )
+                self.assertEqual(caught.exception.code,FailureCode.HASH_MISMATCH.value)
+
+    def test_final_evidence_readback_audit_rejects_final_symlink_substitution(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            observed=evidence.persist_final_evidence_records(
+                approved_root=tmp,manifest_relative_path="manifest.json",final_result_relative_path="final.json",
+                manifest=manifest,final_result=final,**self._evidence_args(chain),
+            )
+            final_path=Path(tmp,"final.json"); target=Path(tmp,"replacement.json")
+            target.write_bytes(final_path.read_bytes()); final_path.unlink(); final_path.symlink_to(target)
+            with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+                evidence.audit_persisted_final_evidence_records(
+                    approved_root=tmp,persistence_result=observed,manifest=manifest,final_result=final,
+                    **self._evidence_args(chain),
+                )
+            self.assertEqual(caught.exception.code,FailureCode.SOURCE_PATH_ESCAPE.value)
+
+    def test_final_evidence_readback_audit_rejects_forged_persistence_metadata(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            observed=evidence.persist_final_evidence_records(
+                approved_root=tmp,manifest_relative_path="manifest.json",final_result_relative_path="final.json",
+                manifest=manifest,final_result=final,**self._evidence_args(chain),
+            )
+            forged=evidence.FinalEvidencePersistenceResult(
+                run_identity=observed.run_identity,manifest_identity=observed.manifest_identity,
+                final_result_identity=observed.final_result_identity,approved_root_identity=observed.approved_root_identity,
+                manifest_relative_path=observed.manifest_relative_path,manifest_content_sha256='0'*64,
+                manifest_byte_count=observed.manifest_byte_count,final_result_relative_path=observed.final_result_relative_path,
+                final_result_content_sha256=observed.final_result_content_sha256,final_result_byte_count=observed.final_result_byte_count,
+            )
+            with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+                evidence.audit_persisted_final_evidence_records(
+                    approved_root=tmp,persistence_result=forged,manifest=manifest,final_result=final,
+                    **self._evidence_args(chain),
+                )
+            self.assertEqual(caught.exception.code,FailureCode.HASH_MISMATCH.value)
+
     def test_final_evidence_validation_completes_before_any_publication(self):
         chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
         wrong=evidence.FinalResultRecord(

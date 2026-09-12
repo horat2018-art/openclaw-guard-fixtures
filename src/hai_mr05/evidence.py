@@ -28,6 +28,8 @@ EVIDENCE_POLICY_VERSION = "MR08A-EVIDENCE-V1"
 
 EVIDENCE_PERSISTENCE_COUNT = 1
 FILESYSTEM_EVIDENCE_WRITE_COUNT = 1
+FINAL_EVIDENCE_READBACK_AUDIT_IMPLEMENTATION_COUNT = 1
+FILESYSTEM_EVIDENCE_READ_IMPLEMENTATION_COUNT = 1
 SUBPROCESS_EXECUTION_COUNT = 0
 NETWORK_IMPLEMENTATION_COUNT = 0
 MODEL_CALL_IMPLEMENTATION_COUNT = 0
@@ -1396,6 +1398,28 @@ class FinalEvidencePersistenceResult:
     model_provider_authority: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class FinalEvidenceReadbackAuditResult:
+    """Observed readback verification result; grants no execution or mutation authority."""
+
+    run_identity: str
+    manifest_identity: str
+    final_result_identity: str
+    approved_root_identity: str
+    manifest_relative_path: str
+    manifest_content_sha256: str
+    manifest_byte_count: int
+    final_result_relative_path: str
+    final_result_content_sha256: str
+    final_result_byte_count: int
+    human_approval: bool = False
+    state_transition_authority: bool = False
+    source_write_authority: bool = False
+    filesystem_write_authority: bool = False
+    git_authority: bool = False
+    model_provider_authority: bool = False
+
+
 def _source_repository_root() -> str | None:
     """Return the frozen source-repository root for the src/hai_mr05 layout."""
 
@@ -1423,6 +1447,88 @@ def _reject_source_repository_destinations(*, approved_root: str, relative_paths
                 FailureCode.MR05_INTERNAL_INVARIANT,
                 "final evidence destination overlaps source repository",
             )
+
+
+def _read_file_flags() -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    return flags
+
+
+def _read_persisted_evidence_bytes(
+    *,
+    root_fd: int,
+    relative_path: str,
+    expected: bytes,
+) -> bytes:
+    """Read one already-persisted evidence record without following links or writing state."""
+
+    parent_fd = root_fd
+    opened_dirs: list[int] = []
+    file_fd: int | None = None
+    try:
+        parts = relative_path.split("/")
+        for part in parts[:-1]:
+            child_fd = _open_directory(parent_fd, part)
+            opened_dirs.append(child_fd)
+            parent_fd = child_fd
+        final_name = parts[-1]
+        try:
+            entry_before = os.stat(final_name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, f"persisted evidence entry cannot be inspected: {exc}")
+        if stat.S_ISLNK(entry_before.st_mode) or not stat.S_ISREG(entry_before.st_mode):
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, "persisted evidence entry is not a real regular file")
+        try:
+            file_fd = os.open(final_name, _read_file_flags(), dir_fd=parent_fd)
+            opened_before = os.fstat(file_fd)
+        except OSError as exc:
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, f"persisted evidence entry cannot be opened: {exc}")
+        if not stat.S_ISREG(opened_before.st_mode):
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, "opened persisted evidence object is not a regular file")
+        if (opened_before.st_dev, opened_before.st_ino) != (entry_before.st_dev, entry_before.st_ino):
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, "persisted evidence entry substitution detected before read")
+        if opened_before.st_size != len(expected):
+            _fail(FailureCode.HASH_MISMATCH, "persisted evidence byte count differs from canonical bytes")
+        chunks: list[bytes] = []
+        remaining = len(expected) + 1
+        while remaining > 0:
+            try:
+                chunk = os.read(file_fd, min(1024 * 1024, remaining))
+            except OSError as exc:
+                _fail(FailureCode.MR05_INTERNAL_INVARIANT, f"persisted evidence read failed closed: {exc}")
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        actual = b"".join(chunks)
+        try:
+            opened_after = os.fstat(file_fd)
+            entry_after = os.stat(final_name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, f"persisted evidence entry cannot be requalified after read: {exc}")
+        if stat.S_ISLNK(entry_after.st_mode) or not stat.S_ISREG(entry_after.st_mode):
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, "persisted evidence entry changed type during read")
+        identity = (opened_before.st_dev, opened_before.st_ino)
+        if identity != (opened_after.st_dev, opened_after.st_ino) or identity != (entry_after.st_dev, entry_after.st_ino):
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, "persisted evidence entry substitution detected during read")
+        if _state_tuple(opened_before) != _state_tuple(opened_after):
+            _fail(FailureCode.HASH_MISMATCH, "persisted evidence file state changed during read")
+        if len(actual) != len(expected) or actual != expected:
+            _fail(FailureCode.HASH_MISMATCH, "persisted evidence bytes differ from canonical bytes")
+        if hashlib.sha256(actual).digest() != hashlib.sha256(expected).digest():
+            _fail(FailureCode.HASH_MISMATCH, "persisted evidence hash differs from canonical bytes")
+        return actual
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        for fd in reversed(opened_dirs):
+            os.close(fd)
 
 
 def _publish_final_evidence_bytes(
@@ -1587,9 +1693,117 @@ def persist_final_evidence_records(
     )
 
 
+def audit_persisted_final_evidence_records(
+    *,
+    approved_root: object,
+    persistence_result: FinalEvidencePersistenceResult,
+    manifest: FrozenEvidenceManifest | Mapping[str, object],
+    final_result: FinalResultRecord | Mapping[str, object],
+    run_record: object,
+    bounded_context_record: object,
+    disclosure_record: object,
+    cloud_context_record: object,
+    cloud_request_record: object,
+    metrics_record: object,
+    proposal_record: object,
+    verification_record: object,
+    legacy_verifier_result: object,
+    verifier_failure_records: object = (),
+    human_gate_record: object = None,
+    human_decision_record: object = None,
+    failure_record: object = None,
+) -> FinalEvidenceReadbackAuditResult:
+    """Requalify and read back exact persisted final evidence without mutation authority."""
+
+    if not isinstance(persistence_result, FinalEvidencePersistenceResult):
+        _fail(FailureCode.INVALID_SCHEMA, "persistence_result must be an exact FinalEvidencePersistenceResult")
+    qualified_manifest = _qualified_frozen_manifest(manifest)
+    qualified_final = (
+        FinalResultRecord.from_mapping(final_result.to_dict())
+        if isinstance(final_result, FinalResultRecord)
+        else FinalResultRecord.from_mapping(final_result)
+    )
+    manifest_path = _relative_path(persistence_result.manifest_relative_path)
+    final_path = _relative_path(persistence_result.final_result_relative_path)
+    if manifest_path == final_path:
+        _fail(FailureCode.DUPLICATE_CONFLICT, "manifest and final-result readback paths must be distinct")
+    manifest_bytes = qualified_manifest.canonical_bytes()
+    final_bytes = canonical_final_result_bytes(
+        qualified_final,
+        run_record=run_record,
+        manifest=qualified_manifest,
+        bounded_context_record=bounded_context_record,
+        disclosure_record=disclosure_record,
+        cloud_context_record=cloud_context_record,
+        cloud_request_record=cloud_request_record,
+        metrics_record=metrics_record,
+        proposal_record=proposal_record,
+        verification_record=verification_record,
+        legacy_verifier_result=legacy_verifier_result,
+        verifier_failure_records=verifier_failure_records,
+        human_gate_record=human_gate_record,
+        human_decision_record=human_decision_record,
+        failure_record=failure_record,
+    )
+    expected_root_identity = approved_root_identity(approved_root)
+    expected_manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    expected_final_sha = hashlib.sha256(final_bytes).hexdigest()
+    if (
+        persistence_result.run_identity != qualified_manifest.run_identity
+        or persistence_result.manifest_identity != qualified_manifest.manifest_identity
+        or persistence_result.final_result_identity != qualified_final.final_result_identity
+        or persistence_result.approved_root_identity != expected_root_identity
+        or persistence_result.manifest_content_sha256 != expected_manifest_sha
+        or persistence_result.manifest_byte_count != len(manifest_bytes)
+        or persistence_result.final_result_content_sha256 != expected_final_sha
+        or persistence_result.final_result_byte_count != len(final_bytes)
+        or persistence_result.human_approval
+        or persistence_result.state_transition_authority
+        or persistence_result.source_write_authority
+        or persistence_result.git_authority
+        or persistence_result.model_provider_authority
+    ):
+        _fail(FailureCode.HASH_MISMATCH, "persistence result is not bound to the exact canonical evidence chain")
+    root = _validated_root(approved_root)
+    _reject_source_repository_destinations(
+        approved_root=root.path, relative_paths=(manifest_path, final_path)
+    )
+    root_fd: int | None = None
+    try:
+        try:
+            root_fd = os.open(root.path, _directory_flags())
+        except OSError as exc:
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, f"approved_root readback open failed closed: {exc}")
+        opened_root = os.fstat(root_fd)
+        if not stat.S_ISDIR(opened_root.st_mode) or _state_tuple(opened_root) != root.state:
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, "approved_root substitution detected before readback")
+        manifest_read = _read_persisted_evidence_bytes(
+            root_fd=root_fd, relative_path=manifest_path, expected=manifest_bytes
+        )
+        final_read = _read_persisted_evidence_bytes(
+            root_fd=root_fd, relative_path=final_path, expected=final_bytes
+        )
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+    return FinalEvidenceReadbackAuditResult(
+        run_identity=qualified_manifest.run_identity,
+        manifest_identity=qualified_manifest.manifest_identity,
+        final_result_identity=qualified_final.final_result_identity,
+        approved_root_identity=expected_root_identity,
+        manifest_relative_path=manifest_path,
+        manifest_content_sha256=hashlib.sha256(manifest_read).hexdigest(),
+        manifest_byte_count=len(manifest_read),
+        final_result_relative_path=final_path,
+        final_result_content_sha256=hashlib.sha256(final_read).hexdigest(),
+        final_result_byte_count=len(final_read),
+    )
+
+
 __all__ = (
     "RUN_POLICY_VERSION", "EVIDENCE_POLICY_VERSION", "EVIDENCE_PERSISTENCE_COUNT",
-    "FILESYSTEM_EVIDENCE_WRITE_COUNT", "SUBPROCESS_EXECUTION_COUNT",
+    "FILESYSTEM_EVIDENCE_WRITE_COUNT", "FINAL_EVIDENCE_READBACK_AUDIT_IMPLEMENTATION_COUNT",
+    "FILESYSTEM_EVIDENCE_READ_IMPLEMENTATION_COUNT", "SUBPROCESS_EXECUTION_COUNT",
     "NETWORK_IMPLEMENTATION_COUNT", "MODEL_CALL_IMPLEMENTATION_COUNT",
     "PROVIDER_CLIENT_IMPLEMENTATION_COUNT", "AUTH_IMPLEMENTATION_COUNT",
     "CONTROLLER_IMPLEMENTATION_COUNT", "HUMAN_GATE_EXECUTION_COUNT",
@@ -1607,4 +1821,5 @@ __all__ = (
     "FrozenEvidenceManifest", "FinalResultRecord", "build_frozen_run_record",
     "build_pre_final_evidence_manifest", "build_final_result", "canonical_final_result_bytes",
     "FinalEvidencePersistenceResult", "persist_final_evidence_records",
+    "FinalEvidenceReadbackAuditResult", "audit_persisted_final_evidence_records",
 )
