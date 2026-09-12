@@ -172,6 +172,42 @@ class SkeletonContractTests(unittest.TestCase):
         with self.assertRaises(provenance.ProvenanceValidationError):
             ProvenanceEdge('a' * 64, 'b' * 64, 'UNKNOWN')
 
+    def test_metrics_builder_derives_identity_and_presentation_from_explicit_counters(self):
+        fields = {
+            "raw_source_bytes": 100,
+            "normalized_bytes": 80,
+            "package_bytes": 70,
+            "cloud_context_bytes": 25,
+            "raw_estimated_tokens": 20,
+            "cloud_estimated_tokens": 5,
+            "model_call_count": 0,
+            "model_retry_count": 0,
+            "failure_count": 1,
+            "source_ref_count": 2,
+            "missing_source_ref_count": 0,
+            "identity_mismatch_count": 0,
+        }
+        built = metrics.build_metrics(**fields)
+        direct = Metrics(**fields)
+        self.assertEqual(built, direct)
+        self.assertEqual(built.byte_reduction_percent, 75.0)
+        self.assertEqual(built.estimated_token_reduction_percent, 75.0)
+        self.assertEqual(built.metrics_identity, direct.metrics_identity)
+        signature = inspect.signature(metrics.build_metrics)
+        self.assertNotIn("metrics_identity", signature.parameters)
+        self.assertNotIn("schema_version", signature.parameters)
+        self.assertNotIn("byte_reduction_percent", signature.parameters)
+        self.assertNotIn("estimated_token_reduction_percent", signature.parameters)
+        observed = metrics.build_metrics(
+            **fields,
+            observational_metadata={"note": "non-policy"},
+        )
+        self.assertEqual(observed.metrics_identity, built.metrics_identity)
+        self.assertEqual(dict(observed.observational_metadata), {"note": "non-policy"})
+        with self.assertRaises(metrics.MetricsValidationError):
+            metrics.build_metrics(**{**fields, "model_retry_count": 1})
+        self.assertEqual(metrics.METRICS_BUILD_IMPLEMENTATION_COUNT, 1)
+
     def test_metrics_formula_zero_edge_and_advisory_token_policy(self):
         result = Metrics(
             raw_source_bytes=100,

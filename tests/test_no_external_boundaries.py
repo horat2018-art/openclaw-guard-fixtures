@@ -187,6 +187,12 @@ class BoundaryTests(unittest.TestCase):
                 ):
                     with self.subTest(path=path.name, required_zero=name):
                         self.assertIn(name, text)
+            elif path.name == 'metrics.py':
+                for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
+                    with self.subTest(path=path.name, token=token):
+                        self.assertNotIn(token, text)
+                self.assertIn('METRICS_BUILD_IMPLEMENTATION_COUNT = 1', text)
+                self.assertEqual(text.count('def build_metrics('), 1)
             elif path.name == 'workflow.py':
                 for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
                     with self.subTest(path=path.name, token=token):

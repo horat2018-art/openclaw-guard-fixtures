@@ -19,6 +19,7 @@ METRICS_SCHEMA_ID = "mr05.metrics"
 METRIC_FORMULA_VERSION = "MR05-METRICS-FORMULAS-1.0.0"
 BYTE_REDUCTION_FORMULA_VERSION = "MR05-BYTE-REDUCTION-1.0.0"
 TOKEN_REDUCTION_FORMULA_VERSION = "MR05-TOKEN-REDUCTION-1.0.0"
+METRICS_BUILD_IMPLEMENTATION_COUNT = 1
 
 
 class MetricsValidationError(ValueError):
@@ -202,6 +203,45 @@ class Metrics:
         )
 
 
+def build_metrics(
+    *,
+    raw_source_bytes: object,
+    normalized_bytes: object,
+    package_bytes: object,
+    cloud_context_bytes: object,
+    raw_estimated_tokens: object,
+    cloud_estimated_tokens: object,
+    model_call_count: object,
+    model_retry_count: object,
+    failure_count: object,
+    source_ref_count: object,
+    missing_source_ref_count: object,
+    identity_mismatch_count: object,
+    observational_metadata: Mapping[str, object] | None = None,
+) -> Metrics:
+    """Construct one deterministic Metrics record from explicit semantic counters.
+
+    Schema/formula versions, reduction percentages, and metrics_identity are derived
+    by the frozen Metrics contract and cannot be caller-supplied through this builder.
+    """
+
+    return Metrics(
+        raw_source_bytes=raw_source_bytes,
+        normalized_bytes=normalized_bytes,
+        package_bytes=package_bytes,
+        cloud_context_bytes=cloud_context_bytes,
+        raw_estimated_tokens=raw_estimated_tokens,
+        cloud_estimated_tokens=cloud_estimated_tokens,
+        model_call_count=model_call_count,
+        model_retry_count=model_retry_count,
+        failure_count=failure_count,
+        source_ref_count=source_ref_count,
+        missing_source_ref_count=missing_source_ref_count,
+        identity_mismatch_count=identity_mismatch_count,
+        observational_metadata={} if observational_metadata is None else observational_metadata,
+    )
+
+
 def byte_reduction_percent(raw_source_bytes: int, cloud_context_bytes: int) -> float:
     """Apply the frozen byte reduction formula with explicit zero behavior."""
 
@@ -232,6 +272,6 @@ def not_implemented(*args: object, **kwargs: object) -> None:
 __all__ = (
     "MAX_METRIC_VALUE", "METRICS_SCHEMA_ID", "METRIC_FORMULA_VERSION",
     "BYTE_REDUCTION_FORMULA_VERSION", "TOKEN_REDUCTION_FORMULA_VERSION",
-    "TOKEN_ESTIMATE_AUTHORITY", "MetricsValidationError",
-    "Metrics", "RunMetrics", "byte_reduction_percent", "token_reduction_percent", "not_implemented",
+    "METRICS_BUILD_IMPLEMENTATION_COUNT", "TOKEN_ESTIMATE_AUTHORITY", "MetricsValidationError",
+    "Metrics", "RunMetrics", "build_metrics", "byte_reduction_percent", "token_reduction_percent", "not_implemented",
 )
