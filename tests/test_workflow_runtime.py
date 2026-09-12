@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hai_mr05 import cloud_boundary, disclosure, evidence, failures, human_gate, proposal, verifier, workflow
+from hai_mr05 import cloud_boundary, disclosure, evidence, failures, human_gate, metrics, proposal, verifier, workflow
 try:
     import tests.test_final_result_runtime as _final_fixture_module
 except ModuleNotFoundError:
@@ -36,6 +36,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
         raw, transport_metadata = WorkflowRuntimeTests._transport(chain)
         verification = chain["verification"]
         disclosure_record = chain["disclosure"]
+        metric_record = chain["metric"]
         args = {
             "run_record": chain["run"], "bounded_context_record": chain["bounded_context"],
             "disclosure_classification": disclosure_record.classification,
@@ -45,7 +46,23 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 if disclosure_record.observational_metadata is None
                 else dict(disclosure_record.observational_metadata)
             ),
-            "metrics_record": chain["metric"],
+            "metrics_raw_source_bytes": metric_record.raw_source_bytes,
+            "metrics_normalized_bytes": metric_record.normalized_bytes,
+            "metrics_package_bytes": metric_record.package_bytes,
+            "metrics_cloud_context_bytes": metric_record.cloud_context_bytes,
+            "metrics_raw_estimated_tokens": metric_record.raw_estimated_tokens,
+            "metrics_cloud_estimated_tokens": metric_record.cloud_estimated_tokens,
+            "metrics_model_call_count": metric_record.model_call_count,
+            "metrics_model_retry_count": metric_record.model_retry_count,
+            "metrics_failure_count": metric_record.failure_count,
+            "metrics_source_ref_count": metric_record.source_ref_count,
+            "metrics_missing_source_ref_count": metric_record.missing_source_ref_count,
+            "metrics_identity_mismatch_count": metric_record.identity_mismatch_count,
+            "metrics_observational_metadata": (
+                None
+                if not metric_record.observational_metadata
+                else dict(metric_record.observational_metadata)
+            ),
             "model_identifier": "openai/gpt-5.6-luna",
             "human_authorization_reference": "human-auth:final-result-fixture",
             "estimated_token_metadata": _final_fixture_module.FinalResultRuntimeTests._token_metadata(),
@@ -237,6 +254,23 @@ class WorkflowRuntimeTests(unittest.TestCase):
             tuple(item.to_dict() for item in chain["disclosure"].findings),
         )
         self.assertEqual(composed.cloud_context_record.disclosure_result, "ALLOW")
+
+    def test_metrics_builder_is_exact_single_delegation(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        original = metrics.build_metrics
+        with mock.patch.object(
+            metrics,
+            "build_metrics",
+            side_effect=original,
+        ) as delegated:
+            composed = self._compose(chain)
+        delegated.assert_called_once()
+        call = delegated.call_args
+        self.assertFalse(call.args)
+        self.assertEqual(call.kwargs["raw_source_bytes"], chain["metric"].raw_source_bytes)
+        self.assertEqual(call.kwargs["cloud_context_bytes"], chain["metric"].cloud_context_bytes)
+        self.assertNotIn("metrics_identity", call.kwargs)
+        self.assertEqual(composed.final_result.metrics_identity, chain["metric"].metrics_identity)
 
     def test_public_verification_builder_is_exact_single_delegation_and_adapter_receives_it(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
@@ -583,6 +617,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertNotIn("human_decision_record", signature.parameters)
         self.assertNotIn("verification_record", signature.parameters)
         self.assertNotIn("disclosure_record", signature.parameters)
+        self.assertNotIn("metrics_record", signature.parameters)
         for name in (
             "authorized_provider_identifier",
             "authorized_account_boundary_reference",
@@ -599,6 +634,19 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "disclosure_classification",
             "disclosure_findings",
             "disclosure_observational_metadata",
+            "metrics_raw_source_bytes",
+            "metrics_normalized_bytes",
+            "metrics_package_bytes",
+            "metrics_cloud_context_bytes",
+            "metrics_raw_estimated_tokens",
+            "metrics_cloud_estimated_tokens",
+            "metrics_model_call_count",
+            "metrics_model_retry_count",
+            "metrics_failure_count",
+            "metrics_source_ref_count",
+            "metrics_missing_source_ref_count",
+            "metrics_identity_mismatch_count",
+            "metrics_observational_metadata",
             "verification_result",
             "verification_reason_codes",
             "verification_reason_details",

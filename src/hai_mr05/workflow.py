@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from . import cloud_boundary, disclosure, evidence, human_gate, proposal, verifier
+from . import cloud_boundary, disclosure, evidence, human_gate, metrics, proposal, verifier
 from .identity import sha256_bytes
 
 
@@ -310,7 +310,19 @@ def compose_top_level_workflow(
     disclosure_classification: object,
     disclosure_findings: object,
     disclosure_observational_metadata: object | None,
-    metrics_record: object,
+    metrics_raw_source_bytes: object,
+    metrics_normalized_bytes: object,
+    metrics_package_bytes: object,
+    metrics_cloud_context_bytes: object,
+    metrics_raw_estimated_tokens: object,
+    metrics_cloud_estimated_tokens: object,
+    metrics_model_call_count: object,
+    metrics_model_retry_count: object,
+    metrics_failure_count: object,
+    metrics_source_ref_count: object,
+    metrics_missing_source_ref_count: object,
+    metrics_identity_mismatch_count: object,
+    metrics_observational_metadata: Mapping[str, object] | None,
     model_identifier: object,
     human_authorization_reference: object,
     estimated_token_metadata: Mapping[str, object],
@@ -358,11 +370,11 @@ def compose_top_level_workflow(
     """Compose supplied deterministic records without executing external authority.
 
     Authorized provider/account intent, already-obtained raw provider-response bytes,
-    non-secret actual transport metadata, explicit disclosure metadata, explicit
-    public-verification semantic material, Human Gate presentation/evidence material,
-    Human Decision material, and final-evidence destination data are explicit discontinuity
-    inputs. Disclosure, Public Verification, Human Gate, and Human Decision record construction
-    is deterministic; verification semantics remain
+    non-secret actual transport metadata, explicit disclosure metadata, explicit metric
+    counters, explicit public-verification semantic material, Human Gate presentation/evidence
+    material, Human Decision material, and final-evidence destination data are explicit
+    discontinuity inputs. Disclosure, Metrics, Public Verification, Human Gate, and Human
+    Decision record construction is deterministic; verification semantics remain
     caller-supplied and are adapter-qualified against the authoritative chain. The function
     never executes a model/provider call or external transport, never generates verification
     findings, never chooses a Human decision, and never performs a state transition.
@@ -373,6 +385,21 @@ def compose_top_level_workflow(
     """
 
     run = _qualified_frozen_run(run_record)
+    constructed_metrics = metrics.build_metrics(
+        raw_source_bytes=metrics_raw_source_bytes,
+        normalized_bytes=metrics_normalized_bytes,
+        package_bytes=metrics_package_bytes,
+        cloud_context_bytes=metrics_cloud_context_bytes,
+        raw_estimated_tokens=metrics_raw_estimated_tokens,
+        cloud_estimated_tokens=metrics_cloud_estimated_tokens,
+        model_call_count=metrics_model_call_count,
+        model_retry_count=metrics_model_retry_count,
+        failure_count=metrics_failure_count,
+        source_ref_count=metrics_source_ref_count,
+        missing_source_ref_count=metrics_missing_source_ref_count,
+        identity_mismatch_count=metrics_identity_mismatch_count,
+        observational_metadata=metrics_observational_metadata,
+    )
     constructed_disclosure = disclosure.build_disclosure(
         classification=disclosure_classification,
         findings=disclosure_findings,
@@ -472,7 +499,7 @@ def compose_top_level_workflow(
         "cloud_request_record": request,
         "proposal_record": admitted_proposal,
         "verification_record": supplied_verification,
-        "metrics_record": metrics_record,
+        "metrics_record": constructed_metrics,
         "legacy_verifier_result": legacy_verifier_result,
         "verifier_failure_records": verifier_failure_records,
         "human_gate_record": gate,

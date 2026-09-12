@@ -211,6 +211,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertNotIn('cloud_boundary.build_cloud_response_record(', text)
                 self.assertIn('proposal.admit_cloud_response_proposal(', text)
                 self.assertEqual(text.count('disclosure.build_disclosure('), 1)
+                self.assertEqual(text.count('metrics.build_metrics('), 1)
                 self.assertEqual(text.count('verifier.build_verification_record('), 1)
                 self.assertEqual(text.count('verifier.validate_verification_adapter('), 1)
                 self.assertEqual(text.count('human_gate.build_human_gate('), 1)
