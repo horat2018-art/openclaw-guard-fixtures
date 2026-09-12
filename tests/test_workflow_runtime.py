@@ -269,6 +269,10 @@ class WorkflowRuntimeTests(unittest.TestCase):
         ) as delegated:
             composed = self._compose(chain)
         delegated.assert_called_once()
+        call = delegated.call_args
+        self.assertEqual(call.args[0], composed.cloud_request_record)
+        self.assertEqual(call.args[1], composed.cloud_execution_authorization_record)
+        self.assertEqual(call.args[2], composed.cloud_execution_handoff_record)
         self.assertEqual(composed.proposal_record, chain["proposal"])
 
     def test_disclosure_builder_is_exact_single_delegation(self):

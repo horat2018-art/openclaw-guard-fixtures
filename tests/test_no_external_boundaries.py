@@ -109,6 +109,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('class CloudResponse:', text)
                 self.assertIn('def build_cloud_execution_handoff(', text)
                 self.assertIn('def validate_cloud_execution_handoff(', text)
+                self.assertEqual(text.count('validate_cloud_execution_handoff('), 2)
                 self.assertIn('def adapt_governed_external_transport_response(', text)
                 for name in (
                     'FILESYSTEM_SOURCE_READ_COUNT = 0',

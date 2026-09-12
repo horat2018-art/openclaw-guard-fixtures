@@ -1,6 +1,7 @@
 import copy
 import inspect
 import unittest
+from unittest import mock
 
 from hai_mr05 import (
     canonical,
@@ -1092,10 +1093,12 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             provider_identifier="provider-a",
             account_boundary_reference="account://boundary-a",
         )
+        handoff = cloud_boundary.build_cloud_execution_handoff(request, authorization)
         raw = b'{"proposal":"governed-external-result"}'
         response = cloud_boundary.adapt_governed_external_transport_response(
             request,
             authorization,
+            handoff,
             raw_provider_response=raw,
             provider_identifier="provider-a",
             actual_model_identifier="model-a",
@@ -1139,6 +1142,7 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             provider_identifier="provider-a",
             account_boundary_reference="account://boundary-a",
         )
+        handoff = cloud_boundary.build_cloud_execution_handoff(request, authorization)
         base = {
             "raw_provider_response": b'{"proposal":"governed-external-result"}',
             "provider_identifier": "provider-a",
@@ -1163,6 +1167,7 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
                 cloud_boundary.adapt_governed_external_transport_response(
                     request,
                     authorization,
+                    handoff,
                     **kwargs,
                 )
             self.assertEqual(
@@ -1176,12 +1181,51 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             cloud_boundary.adapt_governed_external_transport_response(
                 request,
                 authorization,
+                handoff,
                 **bad_bytes,
             )
         self.assertEqual(
             caught.exception.failure_code,
             failures.FailureCode.MR05_MODEL_PROVIDER_ERROR.value,
         )
+
+    def test_governed_external_transport_adapter_rejects_cross_bound_handoff_before_response_build(self):
+        context = self._admit(self._context_package())
+        request = cloud_boundary.build_cloud_request(
+            context,
+            model_identifier="model-a",
+            human_authorization_reference="human://mr16e/r1",
+        )
+        authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-a",
+            account_boundary_reference="account://boundary-a",
+        )
+        other_authorization = cloud_boundary.build_cloud_execution_authorization(
+            request,
+            provider_identifier="provider-b",
+            account_boundary_reference="account://boundary-b",
+        )
+        cross_bound_handoff = cloud_boundary.build_cloud_execution_handoff(
+            request, other_authorization
+        )
+        with mock.patch.object(
+            cloud_boundary,
+            "build_cloud_response_record",
+            wraps=cloud_boundary.build_cloud_response_record,
+        ) as response_builder:
+            with self.assertRaises(cloud_boundary.CloudExecutionHandoffValidationError):
+                cloud_boundary.adapt_governed_external_transport_response(
+                    request,
+                    authorization,
+                    cross_bound_handoff,
+                    raw_provider_response=b'{"proposal":"must-not-admit"}',
+                    provider_identifier="provider-a",
+                    actual_model_identifier="model-a",
+                    provider_request_id="provider-request-mr16e",
+                    account_boundary_reference="account://boundary-a",
+                )
+        response_builder.assert_not_called()
 
     def test_governed_external_transport_adapter_has_no_executor_or_secret_surface(self):
         parameters = tuple(
@@ -1194,6 +1238,7 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
             (
                 "cloud_request",
                 "authorization",
+                "handoff",
                 "raw_provider_response",
                 "provider_identifier",
                 "actual_model_identifier",

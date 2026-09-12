@@ -1837,6 +1837,7 @@ def validate_cloud_response_binding(
 def adapt_governed_external_transport_response(
     cloud_request: CloudRequest | Mapping[str, object],
     authorization: CloudExecutionAuthorization | Mapping[str, object],
+    handoff: CloudExecutionHandoff | Mapping[str, object],
     *,
     raw_provider_response: bytes,
     provider_identifier: object,
@@ -1850,8 +1851,9 @@ def adapt_governed_external_transport_response(
 
     The caller owns all external I/O and authentication.  This adapter accepts only
     already-returned immutable response bytes plus non-secret transport metadata,
-    revalidates the exact request/authorization binding, builds the frozen response
-    record, and fails closed on provider/model/account/attempt/error mismatches.  It
+    requires the exact read-only execution handoff for the request/authorization pair,
+    builds the frozen response record only after that handoff validates, and fails
+    closed on provider/model/account/attempt/error mismatches.  It
     has no network, provider-client, model-call, credential, retry, fallback, routing,
     workflow, state-transition, filesystem, subprocess, or Git authority.
     """
@@ -1862,6 +1864,7 @@ def adapt_governed_external_transport_response(
         else CloudRequest.from_mapping(cloud_request)
     )
     authorized = validate_cloud_execution_authorization(authorization, request)
+    validate_cloud_execution_handoff(handoff, request, authorized)
     response = build_cloud_response_record(
         request,
         authorized,

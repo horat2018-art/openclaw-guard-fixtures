@@ -475,6 +475,7 @@ def compose_top_level_workflow(
     response = cloud_boundary.adapt_governed_external_transport_response(
         request,
         authorization,
+        handoff,
         raw_provider_response=raw_provider_response,
         provider_identifier=provider_identifier,
         actual_model_identifier=actual_model_identifier,
