@@ -295,6 +295,73 @@ def _transport_evidence_artifacts(
     )
 
 
+def _exposed_result_evidence_artifacts(
+    run: evidence.FrozenRunRecord,
+    context: cloud_boundary.CloudContext,
+    request: cloud_boundary.CloudRequest,
+    proposal_record: proposal.CloudProposal,
+    verification_record: verifier.VerificationRecord,
+    gate: human_gate.HumanGateRecord | None,
+    decision: human_gate.HumanDecisionRecord | None,
+) -> tuple[evidence.FrozenEvidenceArtifact, ...]:
+    def artifact(relative_path: str, artifact_type: str, schema_version: str, content: bytes) -> evidence.FrozenEvidenceArtifact:
+        return evidence.FrozenEvidenceArtifact(
+            relative_path=relative_path,
+            byte_size=len(content),
+            sha256=sha256_bytes(content),
+            artifact_type=artifact_type,
+            schema_version=schema_version,
+        )
+
+    artifacts = [
+        artifact(
+            "run/run.json",
+            evidence.FROZEN_RUN_SCHEMA_ID,
+            run.schema_version,
+            run.canonical_bytes(),
+        ),
+        artifact(
+            "cloud/context.json",
+            cloud_boundary.CLOUD_CONTEXT_SCHEMA_ID,
+            context.schema_version,
+            context.canonical_bytes(),
+        ),
+        artifact(
+            "cloud/request.json",
+            cloud_boundary.CLOUD_REQUEST_SCHEMA_ID,
+            request.schema_version,
+            request.canonical_bytes(),
+        ),
+        artifact(
+            "proposal/proposal.json",
+            proposal.PROPOSAL_SCHEMA_ID,
+            proposal_record.schema_version,
+            proposal.canonical_cloud_proposal_bytes(proposal_record),
+        ),
+        artifact(
+            "verification/verification.json",
+            verifier.PUBLIC_VERIFICATION_SCHEMA_ID,
+            verification_record.schema_version,
+            verifier.canonical_verification_bytes(verification_record),
+        ),
+    ]
+    if gate is not None:
+        artifacts.append(artifact(
+            "human_gate/human_gate.json",
+            human_gate.HUMAN_GATE_SCHEMA_ID,
+            gate.schema_version,
+            human_gate.canonical_human_gate_bytes(gate),
+        ))
+    if decision is not None:
+        artifacts.append(artifact(
+            "human_gate/human_decision.json",
+            human_gate.HUMAN_DECISION_SCHEMA_ID,
+            decision.schema_version,
+            human_gate.canonical_human_decision_bytes(decision),
+        ))
+    return tuple(artifacts)
+
+
 def validate_workflow_composition_result(
     value: WorkflowCompositionResult,
 ) -> WorkflowCompositionResult:
@@ -347,9 +414,17 @@ def validate_workflow_composition_result(
     if manifest.run_identity != run.run_identity:
         raise WorkflowCompositionError("workflow evidence manifest is not bound to the frozen run")
     by_path={artifact.relative_path: artifact for artifact in manifest.artifacts}
-    for expected in _transport_evidence_artifacts(authorization, handoff, response, proposal_record):
+    expected_manifest_artifacts = (
+        _transport_evidence_artifacts(authorization, handoff, response, proposal_record)
+        + _exposed_result_evidence_artifacts(
+            run, context, request, proposal_record, verification_record, gate, decision
+        )
+    )
+    for expected in expected_manifest_artifacts:
         if by_path.get(expected.relative_path) != expected:
-            raise WorkflowCompositionError(f"workflow manifest does not bind exact transport artifact {expected.relative_path}")
+            raise WorkflowCompositionError(
+                f"workflow manifest does not bind exact composed artifact {expected.relative_path}"
+            )
     expected_decision=None if decision is None else decision.decision
     if (final_result.run_identity != run.run_identity or
         final_result.proposal_identity_if_any != proposal_record.proposal_identity or

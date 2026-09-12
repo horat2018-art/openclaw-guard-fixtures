@@ -206,6 +206,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT = 1', text)
                 self.assertIn('WORKFLOW_COMPOSITION_VALIDATION_IMPLEMENTATION_COUNT = 1', text)
                 self.assertEqual(text.count('def validate_workflow_composition_result('), 1)
+                self.assertEqual(text.count('def _exposed_result_evidence_artifacts('), 1)
                 self.assertEqual(text.count('return validate_workflow_composition_result(result)'), 1)
                 self.assertEqual(
                     text.count('cloud_boundary.build_cloud_execution_authorization('),

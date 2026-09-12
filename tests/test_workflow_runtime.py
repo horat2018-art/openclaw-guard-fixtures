@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hai_mr05 import cloud_boundary, disclosure, evidence, failures, human_gate, identity, metrics, proposal, verifier, workflow
+from hai_mr05 import canonical, cloud_boundary, disclosure, evidence, failures, human_gate, identity, metrics, proposal, verifier, workflow
 try:
     import tests.test_final_result_runtime as _final_fixture_module
 except ModuleNotFoundError:
@@ -758,6 +758,95 @@ class WorkflowRuntimeTests(unittest.TestCase):
         tampered=replace(composed, final_evidence_persistence_result=tampered_persistence)
         with self.assertRaises(workflow.WorkflowCompositionError):
             workflow.validate_workflow_composition_result(tampered)
+
+    @staticmethod
+    def _reseal_composed_result_for_manifest(composed, manifest):
+        original = composed.final_result
+        final_result = evidence.FinalResultRecord(
+            run_identity=original.run_identity,
+            terminal_state=original.terminal_state,
+            verification_result=original.verification_result,
+            human_decision_if_any=original.human_decision_if_any,
+            failure_if_any=original.failure_if_any,
+            proposal_identity_if_any=original.proposal_identity_if_any,
+            evidence_manifest_identity=manifest.manifest_identity,
+            metrics_identity=original.metrics_identity,
+            observational_metadata=dict(original.observational_metadata),
+            schema_version=original.schema_version,
+        )
+        manifest_bytes = manifest.canonical_bytes()
+        final_bytes = canonical.canonical_json_bytes(final_result.to_dict(), identity_critical=False)
+        persistence = replace(
+            composed.final_evidence_persistence_result,
+            manifest_identity=manifest.manifest_identity,
+            final_result_identity=final_result.final_result_identity,
+            manifest_content_sha256=identity.sha256_bytes(manifest_bytes),
+            manifest_byte_count=len(manifest_bytes),
+            final_result_content_sha256=identity.sha256_bytes(final_bytes),
+            final_result_byte_count=len(final_bytes),
+        )
+        return replace(
+            composed,
+            evidence_manifest=manifest,
+            final_result=final_result,
+            final_evidence_persistence_result=persistence,
+        )
+
+    def test_workflow_validator_rejects_resealed_exposed_record_manifest_tamper(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        composed = self._compose(chain)
+        for target in (
+            "run/run.json",
+            "cloud/context.json",
+            "cloud/request.json",
+            "proposal/proposal.json",
+            "verification/verification.json",
+        ):
+            with self.subTest(target=target):
+                artifacts=list(composed.evidence_manifest.artifacts)
+                index=next(i for i,a in enumerate(artifacts) if a.relative_path == target)
+                current=artifacts[index]
+                forged_sha="0"*64 if current.sha256 != "0"*64 else "1"*64
+                artifacts[index]=evidence.FrozenEvidenceArtifact(
+                    relative_path=current.relative_path,
+                    byte_size=current.byte_size,
+                    sha256=forged_sha,
+                    artifact_type=current.artifact_type,
+                    schema_version=current.schema_version,
+                )
+                manifest=evidence.FrozenEvidenceManifest(
+                    run_identity=composed.evidence_manifest.run_identity,
+                    artifacts=tuple(artifacts),
+                    observational_metadata=dict(composed.evidence_manifest.observational_metadata),
+                )
+                tampered=self._reseal_composed_result_for_manifest(composed, manifest)
+                with self.assertRaises(workflow.WorkflowCompositionError):
+                    workflow.validate_workflow_composition_result(tampered)
+
+    def test_workflow_validator_rejects_resealed_human_manifest_tamper(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain("HUMAN_APPROVED")
+        composed = self._compose(chain)
+        for target in ("human_gate/human_gate.json", "human_gate/human_decision.json"):
+            with self.subTest(target=target):
+                artifacts=list(composed.evidence_manifest.artifacts)
+                index=next(i for i,a in enumerate(artifacts) if a.relative_path == target)
+                current=artifacts[index]
+                forged_sha="0"*64 if current.sha256 != "0"*64 else "1"*64
+                artifacts[index]=evidence.FrozenEvidenceArtifact(
+                    relative_path=current.relative_path,
+                    byte_size=current.byte_size,
+                    sha256=forged_sha,
+                    artifact_type=current.artifact_type,
+                    schema_version=current.schema_version,
+                )
+                manifest=evidence.FrozenEvidenceManifest(
+                    run_identity=composed.evidence_manifest.run_identity,
+                    artifacts=tuple(artifacts),
+                    observational_metadata=dict(composed.evidence_manifest.observational_metadata),
+                )
+                tampered=self._reseal_composed_result_for_manifest(composed, manifest)
+                with self.assertRaises(workflow.WorkflowCompositionError):
+                    workflow.validate_workflow_composition_result(tampered)
 
     def test_external_discontinuities_are_required_parameters(self):
         signature = inspect.signature(workflow.compose_top_level_workflow)
