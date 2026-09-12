@@ -56,6 +56,12 @@ class WorkflowCompositionResult:
     """Deterministic aggregate of the qualified records produced by composition."""
 
     run_record: evidence.FrozenRunRecord
+    bounded_context_record: context_builder.BoundedContextPackage
+    disclosure_record: disclosure.DisclosureRecord
+    metrics_record: metrics.Metrics
+    legacy_verifier_result: verifier.VerifierResult
+    verifier_failure_records: tuple[object, ...]
+    failure_record: object | None
     cloud_context_record: cloud_boundary.CloudContext
     cloud_request_record: cloud_boundary.CloudRequest
     cloud_execution_authorization_record: cloud_boundary.CloudExecutionAuthorization
@@ -425,6 +431,48 @@ def validate_workflow_composition_result(
             raise WorkflowCompositionError(
                 f"workflow manifest does not bind exact composed artifact {expected.relative_path}"
             )
+    evidence_args = {
+        "run_record": run,
+        "bounded_context_record": value.bounded_context_record,
+        "disclosure_record": value.disclosure_record,
+        "cloud_context_record": context,
+        "cloud_request_record": request,
+        "proposal_record": proposal_record,
+        "verification_record": verification_record,
+        "metrics_record": value.metrics_record,
+        "legacy_verifier_result": value.legacy_verifier_result,
+        "verifier_failure_records": value.verifier_failure_records,
+        "human_gate_record": gate,
+        "human_decision_record": decision,
+        "failure_record": value.failure_record,
+    }
+    try:
+        reconstructed_manifest = evidence.build_pre_final_evidence_manifest(
+            **evidence_args,
+            additional_artifacts=_transport_evidence_artifacts(
+                authorization, handoff, response, proposal_record
+            ),
+            observational_metadata=dict(manifest.observational_metadata),
+        )
+        reconstructed_final_result = evidence.build_final_result(
+            terminal_state=run.state,
+            manifest=manifest,
+            **evidence_args,
+            observational_metadata=dict(final_result.observational_metadata),
+        )
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        raise WorkflowCompositionError(
+            "workflow authoritative evidence chain cannot be requalified"
+        ) from exc
+    if reconstructed_manifest != manifest:
+        raise WorkflowCompositionError(
+            "workflow manifest does not equal exact reconstruction from exposed evidence inputs"
+        )
+    if reconstructed_final_result != final_result:
+        raise WorkflowCompositionError(
+            "workflow Final Result does not equal exact authoritative reconstruction"
+        )
+
     expected_decision=None if decision is None else decision.decision
     if (final_result.run_identity != run.run_identity or
         final_result.proposal_identity_if_any != proposal_record.proposal_identity or
@@ -731,6 +779,12 @@ def compose_top_level_workflow(
     )
     result = WorkflowCompositionResult(
         run_record=run,
+        bounded_context_record=bounded_context,
+        disclosure_record=constructed_disclosure,
+        metrics_record=constructed_metrics,
+        legacy_verifier_result=constructed_legacy_verifier,
+        verifier_failure_records=tuple(verifier_failure_records),
+        failure_record=failure_record,
         cloud_context_record=context,
         cloud_request_record=request,
         cloud_execution_authorization_record=authorization,

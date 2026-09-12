@@ -848,6 +848,78 @@ class WorkflowRuntimeTests(unittest.TestCase):
                 with self.assertRaises(workflow.WorkflowCompositionError):
                     workflow.validate_workflow_composition_result(tampered)
 
+    def test_workflow_result_exposes_complete_authoritative_evidence_inputs(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        composed = self._compose(chain)
+        self.assertEqual(composed.bounded_context_record, chain["bounded_context"])
+        self.assertEqual(composed.disclosure_record, chain["disclosure"])
+        self.assertEqual(composed.metrics_record, chain["metric"])
+        self.assertEqual(composed.legacy_verifier_result, chain["legacy"])
+        self.assertEqual(composed.verifier_failure_records, chain["verifier_failures"])
+        self.assertIsNone(composed.failure_record)
+
+    def test_workflow_validator_reconstructs_manifest_and_final_exactly_once(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        composed = self._compose(chain)
+        manifest_builder = evidence.build_pre_final_evidence_manifest
+        final_builder = evidence.build_final_result
+        with mock.patch.object(evidence, "build_pre_final_evidence_manifest", side_effect=manifest_builder) as manifest_delegated, mock.patch.object(evidence, "build_final_result", side_effect=final_builder) as final_delegated:
+            validated = workflow.validate_workflow_composition_result(composed)
+        self.assertIs(validated, composed)
+        manifest_delegated.assert_called_once()
+        final_delegated.assert_called_once()
+        manifest_call = manifest_delegated.call_args.kwargs
+        self.assertIs(manifest_call["bounded_context_record"], composed.bounded_context_record)
+        self.assertIs(manifest_call["disclosure_record"], composed.disclosure_record)
+        self.assertIs(manifest_call["metrics_record"], composed.metrics_record)
+        self.assertIs(manifest_call["legacy_verifier_result"], composed.legacy_verifier_result)
+        self.assertEqual(manifest_call["verifier_failure_records"], composed.verifier_failure_records)
+        self.assertIs(manifest_call["failure_record"], composed.failure_record)
+
+    def test_workflow_validator_rejects_exposed_metrics_substitution(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        composed = self._compose(chain)
+        substituted = metrics.Metrics(
+            raw_source_bytes=composed.metrics_record.raw_source_bytes + 1,
+            normalized_bytes=composed.metrics_record.normalized_bytes,
+            package_bytes=composed.metrics_record.package_bytes,
+            cloud_context_bytes=composed.metrics_record.cloud_context_bytes,
+            raw_estimated_tokens=composed.metrics_record.raw_estimated_tokens,
+            cloud_estimated_tokens=composed.metrics_record.cloud_estimated_tokens,
+            model_call_count=composed.metrics_record.model_call_count,
+            model_retry_count=composed.metrics_record.model_retry_count,
+            failure_count=composed.metrics_record.failure_count,
+            source_ref_count=composed.metrics_record.source_ref_count,
+            missing_source_ref_count=composed.metrics_record.missing_source_ref_count,
+            identity_mismatch_count=composed.metrics_record.identity_mismatch_count,
+        )
+        with self.assertRaises(workflow.WorkflowCompositionError):
+            workflow.validate_workflow_composition_result(
+                replace(composed, metrics_record=substituted)
+            )
+
+    def test_workflow_validator_requalifies_explicit_verifier_failures(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain(
+            "VERIFIED_DENY", verifier_deny=True
+        )
+        composed = self._compose(chain)
+        self.assertEqual(composed.verifier_failure_records, chain["verifier_failures"])
+        self.assertIs(workflow.validate_workflow_composition_result(composed), composed)
+        with self.assertRaises(workflow.WorkflowCompositionError):
+            workflow.validate_workflow_composition_result(
+                replace(composed, verifier_failure_records=())
+            )
+
+    def test_workflow_validator_requalifies_explicit_terminal_failure(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain("FAILED")
+        composed = self._compose(chain)
+        self.assertEqual(composed.failure_record, chain["failure"])
+        self.assertIs(workflow.validate_workflow_composition_result(composed), composed)
+        with self.assertRaises(workflow.WorkflowCompositionError):
+            workflow.validate_workflow_composition_result(
+                replace(composed, failure_record=None)
+            )
+
     def test_external_discontinuities_are_required_parameters(self):
         signature = inspect.signature(workflow.compose_top_level_workflow)
         self.assertNotIn("proposal_record", signature.parameters)
