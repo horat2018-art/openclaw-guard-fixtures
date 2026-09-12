@@ -11,10 +11,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from . import cloud_boundary, context_builder, disclosure, evidence, human_gate, metrics, proposal, verifier
+from .canonical import canonical_json_bytes
 from .identity import sha256_bytes
 
 
 WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT = 1
+WORKFLOW_COMPOSITION_VALIDATION_IMPLEMENTATION_COUNT = 1
 WORKFLOW_EXECUTION_COUNT = 0
 LIVE_CLOUD_EXECUTION_COUNT = 0
 NETWORK_IMPLEMENTATION_COUNT = 0
@@ -257,7 +259,6 @@ def _transport_evidence_artifacts(
     handoff: cloud_boundary.CloudExecutionHandoff,
     response: cloud_boundary.CloudResponse,
     admitted_proposal: proposal.CloudProposal,
-    raw_provider_response: bytes,
 ) -> tuple[evidence.FrozenEvidenceArtifact, ...]:
     authorization_bytes = authorization.canonical_bytes()
     handoff_bytes = handoff.canonical_bytes()
@@ -286,12 +287,93 @@ def _transport_evidence_artifacts(
         ),
         evidence.FrozenEvidenceArtifact(
             relative_path="cloud/response.raw.json",
-            byte_size=len(raw_provider_response),
+            byte_size=response.raw_response_size_bytes,
             sha256=response.raw_response_sha256,
             artifact_type=proposal.PROPOSAL_SCHEMA_ID,
             schema_version=admitted_proposal.schema_version,
         ),
     )
+
+
+def validate_workflow_composition_result(
+    value: WorkflowCompositionResult,
+) -> WorkflowCompositionResult:
+    # Pure in-memory post-admission continuity validation; grants no authority.
+    if not isinstance(value, WorkflowCompositionResult):
+        raise WorkflowCompositionError(
+            "workflow composition result must be an exact WorkflowCompositionResult"
+        )
+    try:
+        run = _qualified_frozen_run(value.run_record)
+        context = cloud_boundary.CloudContext.from_mapping(value.cloud_context_record.to_dict())
+        request = cloud_boundary.CloudRequest.from_mapping(value.cloud_request_record.to_dict())
+        authorization = cloud_boundary.validate_cloud_execution_authorization(
+            value.cloud_execution_authorization_record, request
+        )
+        handoff = cloud_boundary.validate_cloud_execution_handoff(
+            value.cloud_execution_handoff_record, request, authorization
+        )
+        response = cloud_boundary.validate_cloud_response_binding(
+            value.cloud_response_record, request, authorization
+        )
+        proposal_record = proposal.CloudProposal.from_mapping(value.proposal_record.to_dict())
+        verification_record = verifier.VerificationRecord.from_mapping(value.verification_record.to_dict())
+        manifest = evidence.FrozenEvidenceManifest.from_mapping(value.evidence_manifest.to_dict())
+        final_result = evidence.FinalResultRecord.from_mapping(value.final_result.to_dict())
+        gate = None if value.human_gate_record is None else human_gate.HumanGateRecord.from_mapping(value.human_gate_record.to_dict())
+        decision = None if value.human_decision_record is None else human_gate.HumanDecisionRecord.from_mapping(value.human_decision_record.to_dict(), human_gate=gate)
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        raise WorkflowCompositionError(
+            "workflow composition result contains an invalid qualified record"
+        ) from exc
+    if context.run_identity != run.run_identity:
+        raise WorkflowCompositionError("workflow cloud context is not bound to the frozen run")
+    if request.run_identity != run.run_identity or request.context_identity != context.context_identity:
+        raise WorkflowCompositionError("workflow cloud request is not bound to the run/context chain")
+    _validate_remaining_proposal_bindings(proposal_record, run=run)
+    if (proposal_record.request_identity != request.request_identity or
+        proposal_record.run_identity != run.run_identity or
+        proposal_record.bound_context_identity != context.context_identity):
+        raise WorkflowCompositionError("workflow proposal is not bound to the exact request/run/context chain")
+    metadata = proposal_record.proposer_metadata
+    if (metadata.model_identifier != response.actual_model_identifier or
+        metadata.provider_request_id != response.provider_request_id or
+        metadata.attempt_number != response.attempt_number or
+        metadata.usage_if_available != response.provider_usage_if_available):
+        raise WorkflowCompositionError("workflow proposal transport metadata is not bound to the response")
+    if verification_record.proposal_identity != proposal_record.proposal_identity:
+        raise WorkflowCompositionError("workflow verification is not bound to the exact proposal")
+    _validate_human_bindings(run=run, proposal_record=proposal_record, verification_record=verification_record, gate=gate, decision=decision)
+    if manifest.run_identity != run.run_identity:
+        raise WorkflowCompositionError("workflow evidence manifest is not bound to the frozen run")
+    by_path={artifact.relative_path: artifact for artifact in manifest.artifacts}
+    for expected in _transport_evidence_artifacts(authorization, handoff, response, proposal_record):
+        if by_path.get(expected.relative_path) != expected:
+            raise WorkflowCompositionError(f"workflow manifest does not bind exact transport artifact {expected.relative_path}")
+    expected_decision=None if decision is None else decision.decision
+    if (final_result.run_identity != run.run_identity or
+        final_result.proposal_identity_if_any != proposal_record.proposal_identity or
+        final_result.verification_result != verification_record.verification_result or
+        final_result.human_decision_if_any != expected_decision or
+        final_result.evidence_manifest_identity != manifest.manifest_identity):
+        raise WorkflowCompositionError("workflow Final Result is not bound to the composed qualified chain")
+    persistence=value.final_evidence_persistence_result
+    if not isinstance(persistence, evidence.FinalEvidencePersistenceResult):
+        raise WorkflowCompositionError("workflow persistence result is not an exact FinalEvidencePersistenceResult")
+    manifest_bytes=manifest.canonical_bytes()
+    final_bytes=canonical_json_bytes(final_result.to_dict(), identity_critical=False)
+    if (persistence.run_identity != run.run_identity or
+        persistence.manifest_identity != manifest.manifest_identity or
+        persistence.final_result_identity != final_result.final_result_identity or
+        persistence.manifest_content_sha256 != sha256_bytes(manifest_bytes) or
+        persistence.manifest_byte_count != len(manifest_bytes) or
+        persistence.final_result_content_sha256 != sha256_bytes(final_bytes) or
+        persistence.final_result_byte_count != len(final_bytes) or
+        persistence.human_approval or persistence.state_transition_authority or
+        persistence.source_write_authority or persistence.git_authority or
+        persistence.model_provider_authority):
+        raise WorkflowCompositionError("workflow persistence result is not bound to exact manifest/final bytes")
+    return value
 
 
 def _validate_human_bindings(
@@ -551,7 +633,7 @@ def compose_top_level_workflow(
         "failure_record": failure_record,
     }
     transport_artifacts = _transport_evidence_artifacts(
-        authorization, handoff, response, admitted_proposal, raw_provider_response
+        authorization, handoff, response, admitted_proposal
     )
     manifest = evidence.build_pre_final_evidence_manifest(
         **evidence_args,
@@ -572,7 +654,7 @@ def compose_top_level_workflow(
         final_result=final_result,
         **evidence_args,
     )
-    return WorkflowCompositionResult(
+    result = WorkflowCompositionResult(
         run_record=run,
         cloud_context_record=context,
         cloud_request_record=request,
@@ -587,13 +669,16 @@ def compose_top_level_workflow(
         final_result=final_result,
         final_evidence_persistence_result=persistence_result,
     )
+    return validate_workflow_composition_result(result)
 
 
 __all__ = [
     "WorkflowCompositionError",
     "WorkflowCompositionResult",
+    "validate_workflow_composition_result",
     "compose_top_level_workflow",
     "WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT",
+    "WORKFLOW_COMPOSITION_VALIDATION_IMPLEMENTATION_COUNT",
     "WORKFLOW_EXECUTION_COUNT",
     "LIVE_CLOUD_EXECUTION_COUNT",
     "NETWORK_IMPLEMENTATION_COUNT",

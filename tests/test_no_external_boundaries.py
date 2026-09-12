@@ -204,6 +204,9 @@ class BoundaryTests(unittest.TestCase):
                     with self.subTest(path=path.name, token=token):
                         self.assertNotIn(token, text)
                 self.assertIn('WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('WORKFLOW_COMPOSITION_VALIDATION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertEqual(text.count('def validate_workflow_composition_result('), 1)
+                self.assertEqual(text.count('return validate_workflow_composition_result(result)'), 1)
                 self.assertEqual(
                     text.count('cloud_boundary.build_cloud_execution_authorization('),
                     1,
@@ -212,12 +215,13 @@ class BoundaryTests(unittest.TestCase):
                     text.count('cloud_boundary.build_cloud_execution_handoff('),
                     1,
                 )
-                self.assertNotIn('cloud_boundary.validate_cloud_execution_authorization(', text)
+                self.assertEqual(text.count('cloud_boundary.validate_cloud_execution_authorization('), 1)
+                self.assertEqual(text.count('cloud_boundary.validate_cloud_execution_handoff('), 1)
                 self.assertEqual(
                     text.count('cloud_boundary.adapt_governed_external_transport_response('),
                     1,
                 )
-                self.assertNotIn('cloud_boundary.validate_cloud_response_binding(', text)
+                self.assertEqual(text.count('cloud_boundary.validate_cloud_response_binding('), 1)
                 self.assertNotIn('cloud_boundary.build_cloud_response_record(', text)
                 self.assertEqual(text.count('proposal.admit_cloud_response_proposal('), 1)
                 self.assertEqual(text.count('disclosure.build_disclosure('), 1)

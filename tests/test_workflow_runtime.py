@@ -1,4 +1,5 @@
 import inspect
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -710,6 +711,53 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(first.final_result.final_result_identity, second.final_result.final_result_identity); self.assertEqual(first.evidence_manifest.manifest_identity, second.evidence_manifest.manifest_identity)
         for name in ("WORKFLOW_EXECUTION_COUNT","LIVE_CLOUD_EXECUTION_COUNT","NETWORK_IMPLEMENTATION_COUNT","PROVIDER_CLIENT_IMPLEMENTATION_COUNT","MODEL_CALL_IMPLEMENTATION_COUNT","MODEL_ROUTING_IMPLEMENTATION_COUNT","AUTH_IMPLEMENTATION_COUNT","AUTO_RETRY_IMPLEMENTATION_COUNT","AUTO_FALLBACK_IMPLEMENTATION_COUNT","HUMAN_APPROVAL_EXECUTION_COUNT","HUMAN_DECISION_SIDE_EFFECT_COUNT","STATE_TRANSITION_EXECUTION_COUNT"): self.assertEqual(getattr(workflow,name),0)
         self.assertEqual(workflow.WORKFLOW_COMPOSITION_IMPLEMENTATION_COUNT,1)
+
+    def test_workflow_composition_validator_accepts_exact_composed_result(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        composed = self._compose(chain)
+        self.assertIs(workflow.validate_workflow_composition_result(composed), composed)
+        self.assertEqual(workflow.WORKFLOW_COMPOSITION_VALIDATION_IMPLEMENTATION_COUNT, 1)
+
+    def test_workflow_composition_validator_is_exact_single_delegation(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        original = workflow.validate_workflow_composition_result
+        with mock.patch.object(workflow, "validate_workflow_composition_result", side_effect=original) as delegated:
+            composed = self._compose(chain)
+        delegated.assert_called_once()
+        self.assertIs(delegated.call_args.args[0], composed)
+
+    def test_workflow_composition_validator_rejects_cross_bound_handoff(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        composed = self._compose(chain)
+        other_authorization = cloud_boundary.build_cloud_execution_authorization(
+            composed.cloud_request_record,
+            provider_identifier="provider-other",
+            account_boundary_reference="account://workflow-fixture",
+        )
+        other_handoff = cloud_boundary.build_cloud_execution_handoff(composed.cloud_request_record, other_authorization)
+        tampered = replace(composed, cloud_execution_handoff_record=other_handoff)
+        with self.assertRaises(workflow.WorkflowCompositionError):
+            workflow.validate_workflow_composition_result(tampered)
+
+    def test_workflow_composition_validator_rejects_handoff_manifest_tamper(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        composed = self._compose(chain)
+        artifacts=list(composed.evidence_manifest.artifacts)
+        index=next(i for i,a in enumerate(artifacts) if a.relative_path == "cloud/execution_handoff.json")
+        current=artifacts[index]
+        artifacts[index]=evidence.FrozenEvidenceArtifact(relative_path=current.relative_path, byte_size=current.byte_size, sha256="f"*64, artifact_type=current.artifact_type, schema_version=current.schema_version)
+        tampered_manifest=evidence.FrozenEvidenceManifest(run_identity=composed.evidence_manifest.run_identity, artifacts=tuple(artifacts), observational_metadata=dict(composed.evidence_manifest.observational_metadata))
+        tampered=replace(composed, evidence_manifest=tampered_manifest)
+        with self.assertRaises(workflow.WorkflowCompositionError):
+            workflow.validate_workflow_composition_result(tampered)
+
+    def test_workflow_composition_validator_rejects_persistence_identity_tamper(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        composed = self._compose(chain)
+        tampered_persistence=replace(composed.final_evidence_persistence_result, manifest_identity="f"*64)
+        tampered=replace(composed, final_evidence_persistence_result=tampered_persistence)
+        with self.assertRaises(workflow.WorkflowCompositionError):
+            workflow.validate_workflow_composition_result(tampered)
 
     def test_external_discontinuities_are_required_parameters(self):
         signature = inspect.signature(workflow.compose_top_level_workflow)
