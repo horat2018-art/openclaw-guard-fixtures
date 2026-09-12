@@ -373,6 +373,25 @@ class FinalResultRuntimeTests(unittest.TestCase):
             self.assertFalse((root/"manifest.json").exists() or (root/"final.json").exists())
             self.assertTrue((detached/"manifest.json").exists() and (detached/"final.json").exists())
 
+    def test_final_evidence_persistence_rejects_intermediate_path_substitution(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); nested=root/"e"; nested.mkdir(); detached=root/"old_e"; original=evidence._publish_final_evidence_bytes; calls={"count":0}
+            def publish_and_swap(**kwargs):
+                result=original(**kwargs); calls["count"] += 1
+                if calls["count"] == 1:
+                    nested.rename(detached); nested.mkdir()
+                return result
+            with mock.patch.object(evidence, "_publish_final_evidence_bytes", side_effect=publish_and_swap):
+                with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+                    evidence.persist_final_evidence_records(
+                        approved_root=tmp,manifest_relative_path="e/manifest.json",final_result_relative_path="e/final.json",
+                        manifest=manifest,final_result=final,**self._evidence_args(chain),
+                    )
+            self.assertEqual(caught.exception.code,FailureCode.SOURCE_PATH_ESCAPE.value)
+            self.assertFalse((nested/"manifest.json").exists())
+            self.assertTrue((detached/"manifest.json").exists())
+
     def test_final_evidence_readback_audit_accepts_exact_persisted_bytes(self):
         chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
         with tempfile.TemporaryDirectory() as tmp:
@@ -414,6 +433,29 @@ class FinalResultRuntimeTests(unittest.TestCase):
             self.assertEqual(caught.exception.code,FailureCode.SOURCE_PATH_ESCAPE.value)
             self.assertFalse((root/"manifest.json").exists() or (root/"final.json").exists())
             self.assertTrue((detached/"manifest.json").exists() and (detached/"final.json").exists())
+
+    def test_final_evidence_readback_audit_rejects_intermediate_path_substitution(self):
+        chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); nested=root/"e"; nested.mkdir(); detached=root/"old_e"
+            observed=evidence.persist_final_evidence_records(
+                approved_root=tmp,manifest_relative_path="e/manifest.json",final_result_relative_path="e/final.json",
+                manifest=manifest,final_result=final,**self._evidence_args(chain),
+            )
+            original=evidence._read_persisted_evidence_bytes; calls={"count":0}
+            def read_and_swap(**kwargs):
+                result=original(**kwargs); calls["count"] += 1
+                if calls["count"] == 1:
+                    nested.rename(detached); nested.mkdir(); (nested/"manifest.json").write_bytes(b"CORRUPT"); (nested/"final.json").write_bytes((detached/"final.json").read_bytes())
+                return result
+            with mock.patch.object(evidence, "_read_persisted_evidence_bytes", side_effect=read_and_swap):
+                with self.assertRaises(evidence.EvidencePersistenceError) as caught:
+                    evidence.audit_persisted_final_evidence_records(
+                        approved_root=tmp,persistence_result=observed,manifest=manifest,final_result=final,
+                        **self._evidence_args(chain),
+                    )
+            self.assertIn(caught.exception.code,(FailureCode.SOURCE_PATH_ESCAPE.value,FailureCode.HASH_MISMATCH.value))
+            self.assertEqual((nested/"manifest.json").read_bytes(),b"CORRUPT")
 
     def test_final_evidence_readback_audit_rejects_manifest_or_final_tamper(self):
         chain=self._full_chain(); manifest=self._manifest(chain); final=self._final(chain,manifest)

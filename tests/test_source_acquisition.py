@@ -84,6 +84,32 @@ class SourceAcquisitionTests(unittest.TestCase):
             self.assertEqual((root / "sample.bin").read_bytes(), b"replacement")
             self.assertEqual((detached / "sample.bin").read_bytes(), b"stable")
 
+    def test_final_source_leaf_substitution_during_capture_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); path = root / "sample.bin"; path.write_bytes(b"original"); real_read = source_acquisition.os.read; swapped = {"done": False}
+            def read_and_swap(fd, size):
+                chunk = real_read(fd, size)
+                if chunk and not swapped["done"]:
+                    path.rename(root / "old.bin"); path.write_bytes(b"replacement"); swapped["done"] = True
+                return chunk
+            with mock.patch.object(source_acquisition.os, "read", side_effect=read_and_swap):
+                with self.assertRaises(source_acquisition.SourceAcquisitionError) as raised:
+                    self._capture(root)
+            self.assertEqual(raised.exception.code, FailureCode.SOURCE_PATH_ESCAPE.value)
+
+    def test_intermediate_source_path_substitution_during_capture_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); nested = root / "a"; nested.mkdir(); (nested / "sample.bin").write_bytes(b"original"); detached = root / "old_a"; real_read = source_acquisition.os.read; swapped = {"done": False}
+            def read_and_swap(fd, size):
+                chunk = real_read(fd, size)
+                if chunk and not swapped["done"]:
+                    nested.rename(detached); nested.mkdir(); (nested / "sample.bin").write_bytes(b"replacement"); swapped["done"] = True
+                return chunk
+            with mock.patch.object(source_acquisition.os, "read", side_effect=read_and_swap):
+                with self.assertRaises(source_acquisition.SourceAcquisitionError) as raised:
+                    self._capture(root, relative_path="a/sample.bin")
+            self.assertEqual(raised.exception.code, FailureCode.SOURCE_PATH_ESCAPE.value)
+
     def test_root_symlink_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp); real = base / "real"; real.mkdir(); link = base / "link"; link.symlink_to(real, target_is_directory=True)

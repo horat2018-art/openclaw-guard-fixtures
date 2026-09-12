@@ -218,6 +218,7 @@ def _read_regular_file_once(root: _ValidatedRoot, relative_path: str) -> bytes:
     root_fd: int | None = None
     parent_fd: int | None = None
     opened_dirs: list[int] = []
+    opened_components: list[tuple[int, str, int]] = []
     final_fd: int | None = None
     try:
         try:
@@ -233,6 +234,7 @@ def _read_regular_file_once(root: _ValidatedRoot, relative_path: str) -> bytes:
             child_fd = _open_component(part, parent_fd=parent_fd, directory=True)
             opened_dirs.append(child_fd)
             _verify_directory_entry(parent_fd, part, child_fd)
+            opened_components.append((parent_fd, part, child_fd))
             parent_fd = child_fd
         final_fd = _open_component(parts[-1], parent_fd=parent_fd, directory=False)
         before = os.fstat(final_fd)
@@ -251,6 +253,14 @@ def _read_regular_file_once(root: _ValidatedRoot, relative_path: str) -> bytes:
                 break
             chunks.append(chunk)
         after = os.fstat(final_fd)
+        for component_parent_fd, component_name, component_fd in opened_components:
+            _verify_directory_entry(component_parent_fd, component_name, component_fd)
+        try:
+            current_entry = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, f"final source entry cannot be requalified after capture: {exc}")
+        if stat.S_ISLNK(current_entry.st_mode) or (current_entry.st_dev, current_entry.st_ino) != (after.st_dev, after.st_ino):
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, "final source path substitution detected during capture")
         if _state_tuple(before) != _state_tuple(after):
             _fail(FailureCode.HASH_MISMATCH, "source changed during immutable capture")
         raw = b"".join(chunks)

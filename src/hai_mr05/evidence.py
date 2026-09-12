@@ -411,6 +411,18 @@ def _open_directory(parent_fd: int, name: str) -> int:
     return child_fd
 
 
+def _requalify_open_directory_entry(parent_fd: int, name: str, child_fd: int) -> None:
+    try:
+        child = os.fstat(child_fd)
+        entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, f"evidence directory entry cannot be requalified: {exc}")
+    if not stat.S_ISDIR(child.st_mode) or stat.S_ISLNK(entry.st_mode):
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "evidence path component changed type during operation")
+    if (child.st_dev, child.st_ino) != (entry.st_dev, entry.st_ino):
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "evidence directory path substitution detected during operation")
+
+
 def _destination_absent(parent_fd: int, name: str) -> None:
     try:
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -555,6 +567,7 @@ def persist_evidence(
             os.fsync(parent_fd)
         except OSError as exc:
             _fail(FailureCode.MR05_INTERNAL_INVARIANT, f"successful-publication temporary-link cleanup failed: {exc}")
+        _read_persisted_evidence_bytes(root_fd=root_fd, relative_path=path, expected=canonical)
         _requalify_root_path(root, root_fd)
         return PersistenceResult(
             run_identity=record.run_identity,
@@ -1489,12 +1502,14 @@ def _read_persisted_evidence_bytes(
 
     parent_fd = root_fd
     opened_dirs: list[int] = []
+    opened_components: list[tuple[int, str, int]] = []
     file_fd: int | None = None
     try:
         parts = relative_path.split("/")
         for part in parts[:-1]:
             child_fd = _open_directory(parent_fd, part)
             opened_dirs.append(child_fd)
+            opened_components.append((parent_fd, part, child_fd))
             parent_fd = child_fd
         final_name = parts[-1]
         try:
@@ -1528,6 +1543,11 @@ def _read_persisted_evidence_bytes(
         actual = b"".join(chunks)
         try:
             opened_after = os.fstat(file_fd)
+        except OSError as exc:
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, f"opened persisted evidence entry cannot be requalified after read: {exc}")
+        for component_parent_fd, component_name, component_fd in opened_components:
+            _requalify_open_directory_entry(component_parent_fd, component_name, component_fd)
+        try:
             entry_after = os.stat(final_name, dir_fd=parent_fd, follow_symlinks=False)
         except OSError as exc:
             _fail(FailureCode.SOURCE_PATH_ESCAPE, f"persisted evidence entry cannot be requalified after read: {exc}")
@@ -1700,6 +1720,8 @@ def persist_final_evidence_records(
             root_fd=root_fd, relative_path=final_path, canonical=final_bytes,
             temp_name=f".mr15j-final-{qualified_final.final_result_identity}.tmp",
         )
+        _read_persisted_evidence_bytes(root_fd=root_fd, relative_path=manifest_path, expected=manifest_bytes)
+        _read_persisted_evidence_bytes(root_fd=root_fd, relative_path=final_path, expected=final_bytes)
         _requalify_root_path(root, root_fd)
     finally:
         if root_fd is not None:
@@ -1797,6 +1819,12 @@ def audit_persisted_final_evidence_records(
         opened_root = os.fstat(root_fd)
         if not stat.S_ISDIR(opened_root.st_mode) or _state_tuple(opened_root) != root.state:
             _fail(FailureCode.SOURCE_PATH_ESCAPE, "approved_root substitution detected before readback")
+        manifest_read = _read_persisted_evidence_bytes(
+            root_fd=root_fd, relative_path=manifest_path, expected=manifest_bytes
+        )
+        final_read = _read_persisted_evidence_bytes(
+            root_fd=root_fd, relative_path=final_path, expected=final_bytes
+        )
         manifest_read = _read_persisted_evidence_bytes(
             root_fd=root_fd, relative_path=manifest_path, expected=manifest_bytes
         )
