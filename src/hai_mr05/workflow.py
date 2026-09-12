@@ -57,6 +57,7 @@ class WorkflowCompositionResult:
     cloud_context_record: cloud_boundary.CloudContext
     cloud_request_record: cloud_boundary.CloudRequest
     cloud_execution_authorization_record: cloud_boundary.CloudExecutionAuthorization
+    cloud_execution_handoff_record: cloud_boundary.CloudExecutionHandoff
     cloud_response_record: cloud_boundary.CloudResponse
     proposal_record: proposal.CloudProposal
     verification_record: verifier.VerificationRecord
@@ -253,11 +254,13 @@ def _validate_remaining_proposal_bindings(
 
 def _transport_evidence_artifacts(
     authorization: cloud_boundary.CloudExecutionAuthorization,
+    handoff: cloud_boundary.CloudExecutionHandoff,
     response: cloud_boundary.CloudResponse,
     admitted_proposal: proposal.CloudProposal,
     raw_provider_response: bytes,
 ) -> tuple[evidence.FrozenEvidenceArtifact, ...]:
     authorization_bytes = authorization.canonical_bytes()
+    handoff_bytes = handoff.canonical_bytes()
     response_bytes = response.canonical_bytes()
     return (
         evidence.FrozenEvidenceArtifact(
@@ -266,6 +269,13 @@ def _transport_evidence_artifacts(
             sha256=sha256_bytes(authorization_bytes),
             artifact_type=cloud_boundary.CLOUD_EXECUTION_AUTHORIZATION_SCHEMA_ID,
             schema_version=authorization.schema_version,
+        ),
+        evidence.FrozenEvidenceArtifact(
+            relative_path="cloud/execution_handoff.json",
+            byte_size=len(handoff_bytes),
+            sha256=sha256_bytes(handoff_bytes),
+            artifact_type=cloud_boundary.CLOUD_EXECUTION_HANDOFF_SCHEMA_ID,
+            schema_version=handoff.schema_version,
         ),
         evidence.FrozenEvidenceArtifact(
             relative_path="cloud/response.json",
@@ -461,6 +471,7 @@ def compose_top_level_workflow(
         account_boundary_reference=authorized_account_boundary_reference,
         observational_metadata=authorization_observational_metadata,
     )
+    handoff = cloud_boundary.build_cloud_execution_handoff(request, authorization)
     response = cloud_boundary.adapt_governed_external_transport_response(
         request,
         authorization,
@@ -539,7 +550,7 @@ def compose_top_level_workflow(
         "failure_record": failure_record,
     }
     transport_artifacts = _transport_evidence_artifacts(
-        authorization, response, admitted_proposal, raw_provider_response
+        authorization, handoff, response, admitted_proposal, raw_provider_response
     )
     manifest = evidence.build_pre_final_evidence_manifest(
         **evidence_args,
@@ -565,6 +576,7 @@ def compose_top_level_workflow(
         cloud_context_record=context,
         cloud_request_record=request,
         cloud_execution_authorization_record=authorization,
+        cloud_execution_handoff_record=handoff,
         cloud_response_record=response,
         proposal_record=admitted_proposal,
         verification_record=supplied_verification,

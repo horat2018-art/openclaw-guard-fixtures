@@ -206,6 +206,10 @@ class BoundaryTests(unittest.TestCase):
                     text.count('cloud_boundary.build_cloud_execution_authorization('),
                     1,
                 )
+                self.assertEqual(
+                    text.count('cloud_boundary.build_cloud_execution_handoff('),
+                    1,
+                )
                 self.assertNotIn('cloud_boundary.validate_cloud_execution_authorization(', text)
                 self.assertEqual(
                     text.count('cloud_boundary.adapt_governed_external_transport_response('),
@@ -225,6 +229,7 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('final_evidence_persistence_result: evidence.FinalEvidencePersistenceResult', text)
                 self.assertNotIn('proposal.parse_cloud_proposal(', text)
                 self.assertIn('cloud/execution_authorization.json', text)
+                self.assertIn('cloud/execution_handoff.json', text)
                 self.assertIn('cloud/response.json', text)
                 self.assertIn('cloud/response.raw.json', text)
                 for name in (

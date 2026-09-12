@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hai_mr05 import cloud_boundary, disclosure, evidence, failures, human_gate, metrics, proposal, verifier, workflow
+from hai_mr05 import cloud_boundary, disclosure, evidence, failures, human_gate, identity, metrics, proposal, verifier, workflow
 try:
     import tests.test_final_result_runtime as _final_fixture_module
 except ModuleNotFoundError:
@@ -192,6 +192,11 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(composed.final_result.terminal_state, "VERIFIED_PASS_FOR_REVIEW")
         artifacts = {item.relative_path: item for item in composed.evidence_manifest.artifacts}
         self.assertEqual(artifacts["cloud/execution_authorization.json"].artifact_type, "mr05.cloud_execution_authorization")
+        self.assertEqual(artifacts["cloud/execution_handoff.json"].artifact_type, "mr05.cloud_execution_handoff")
+        self.assertEqual(
+            artifacts["cloud/execution_handoff.json"].sha256,
+            identity.sha256_bytes(composed.cloud_execution_handoff_record.canonical_bytes()),
+        )
         self.assertEqual(artifacts["cloud/response.json"].artifact_type, "mr05.cloud_response")
         self.assertEqual(artifacts["cloud/response.raw.json"].artifact_type, "mr05.cloud_proposal")
         self.assertEqual(artifacts["cloud/response.raw.json"].sha256, composed.cloud_response_record.raw_response_sha256)
@@ -224,6 +229,34 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(
             dict(composed.cloud_execution_authorization_record.observational_metadata),
             {"note": "workflow-bound"},
+        )
+
+    def test_execution_handoff_builder_is_exact_single_delegation(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        original = cloud_boundary.build_cloud_execution_handoff
+        with mock.patch.object(
+            cloud_boundary,
+            "build_cloud_execution_handoff",
+            side_effect=original,
+        ) as delegated:
+            composed = self._compose(chain)
+        delegated.assert_called_once()
+        call = delegated.call_args
+        self.assertEqual(call.args[0], composed.cloud_request_record)
+        self.assertEqual(
+            call.args[1], composed.cloud_execution_authorization_record
+        )
+        self.assertEqual(
+            composed.cloud_execution_handoff_record.request_identity,
+            composed.cloud_request_record.request_identity,
+        )
+        self.assertEqual(
+            composed.cloud_execution_handoff_record.authorization_identity,
+            composed.cloud_execution_authorization_record.authorization_identity,
+        )
+        self.assertEqual(
+            composed.cloud_execution_handoff_record.execution_authority,
+            "NONE",
         )
 
     def test_governed_external_transport_adapter_is_exact_single_delegation(self):
