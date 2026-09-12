@@ -71,7 +71,9 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "authorization_observational_metadata": None,
             "raw_provider_response": raw,
             **transport_metadata,
-            "legacy_verifier_result": chain["legacy"],
+            "legacy_verifier_checks": tuple(
+                item.to_dict() for item in chain["legacy"].checks
+            ),
             "verification_result": verification.verification_result,
             "verification_reason_codes": verification.reason_codes,
             "verification_reason_details": tuple(
@@ -271,6 +273,54 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertEqual(call.kwargs["cloud_context_bytes"], chain["metric"].cloud_context_bytes)
         self.assertNotIn("metrics_identity", call.kwargs)
         self.assertEqual(composed.final_result.metrics_identity, chain["metric"].metrics_identity)
+
+    def test_legacy_verifier_builder_is_exact_single_delegation_and_derives_bindings(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        original = verifier.build_verifier_result
+        with mock.patch.object(
+            verifier,
+            "build_verifier_result",
+            side_effect=original,
+        ) as delegated:
+            composed = self._compose(chain)
+        delegated.assert_called_once()
+        call = delegated.call_args
+        self.assertFalse(call.args)
+        expected_inputs = dict(chain["bounded_context"].input_identities)
+        expected_inputs["context_identity"] = composed.cloud_context_record.context_identity
+        self.assertEqual(call.kwargs["input_identities"], expected_inputs)
+        self.assertEqual(
+            call.kwargs["dependency_binding_identities"],
+            chain["bounded_context"].dependency_binding_identities,
+        )
+        self.assertEqual(
+            call.kwargs["provenance_identity"],
+            chain["bounded_context"].provenance_identity,
+        )
+        self.assertEqual(call.kwargs["metrics_identity"], chain["metric"].metrics_identity)
+        self.assertEqual(call.kwargs["contract_identities"], verifier.FROZEN_CONTRACT_IDENTITIES)
+        self.assertEqual(
+            call.kwargs["checks"],
+            tuple(item.to_dict() for item in chain["legacy"].checks),
+        )
+        self.assertEqual(call.kwargs["failure_records"], chain["verifier_failures"])
+        for forbidden in ("decision", "decision_reason_code", "verifier_identity"):
+            self.assertNotIn(forbidden, call.kwargs)
+        self.assertEqual(composed.final_result.metrics_identity, chain["legacy"].metrics_identity)
+
+    def test_metrics_context_mismatch_fails_before_cloud_request_composition(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        with mock.patch.object(
+            cloud_boundary,
+            "build_cloud_request",
+            wraps=cloud_boundary.build_cloud_request,
+        ) as delegated:
+            with self.assertRaisesRegex(workflow.WorkflowCompositionError, "Metrics"):
+                self._compose(
+                    chain,
+                    metrics_raw_source_bytes=chain["metric"].raw_source_bytes + 1,
+                )
+        delegated.assert_not_called()
 
     def test_public_verification_builder_is_exact_single_delegation_and_adapter_receives_it(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
@@ -618,6 +668,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertNotIn("verification_record", signature.parameters)
         self.assertNotIn("disclosure_record", signature.parameters)
         self.assertNotIn("metrics_record", signature.parameters)
+        self.assertNotIn("legacy_verifier_result", signature.parameters)
         for name in (
             "authorized_provider_identifier",
             "authorized_account_boundary_reference",
@@ -647,6 +698,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "metrics_missing_source_ref_count",
             "metrics_identity_mismatch_count",
             "metrics_observational_metadata",
+            "legacy_verifier_checks",
             "verification_result",
             "verification_reason_codes",
             "verification_reason_details",

@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from . import cloud_boundary, disclosure, evidence, human_gate, metrics, proposal, verifier
+from . import cloud_boundary, context_builder, disclosure, evidence, human_gate, metrics, proposal, verifier
 from .identity import sha256_bytes
 
 
@@ -83,6 +83,21 @@ def _qualified_frozen_run(value: object) -> evidence.FrozenRunRecord:
         ) from exc
     raise WorkflowCompositionError(
         "run_record must be an exact qualified FrozenRunRecord"
+    )
+
+
+def _qualified_bounded_context(value: object) -> context_builder.BoundedContextPackage:
+    try:
+        if isinstance(value, context_builder.BoundedContextPackage):
+            return context_builder.BoundedContextPackage.from_mapping(value.to_dict())
+        if isinstance(value, Mapping):
+            return context_builder.BoundedContextPackage.from_mapping(value)
+    except context_builder.ContextBuildValidationError as exc:
+        raise WorkflowCompositionError(
+            "bounded_context_record is not an exact qualified BoundedContextPackage"
+        ) from exc
+    raise WorkflowCompositionError(
+        "bounded_context_record must be an exact qualified BoundedContextPackage"
     )
 
 
@@ -336,7 +351,7 @@ def compose_top_level_workflow(
     account_boundary_reference: object,
     provider_usage_if_available: Mapping[str, object] | None,
     error_metadata: Mapping[str, object] | None,
-    legacy_verifier_result: object,
+    legacy_verifier_checks: object,
     verification_result: object,
     verification_reason_codes: object,
     verification_reason_details: object,
@@ -371,11 +386,12 @@ def compose_top_level_workflow(
 
     Authorized provider/account intent, already-obtained raw provider-response bytes,
     non-secret actual transport metadata, explicit disclosure metadata, explicit metric
-    counters, explicit public-verification semantic material, Human Gate presentation/evidence
-    material, Human Decision material, and final-evidence destination data are explicit
-    discontinuity inputs. Disclosure, Metrics, Public Verification, Human Gate, and Human
-    Decision record construction is deterministic; verification semantics remain
-    caller-supplied and are adapter-qualified against the authoritative chain. The function
+    counters, explicit legacy-verifier checks, explicit public-verification semantic material,
+    Human Gate presentation/evidence material, Human Decision material, and final-evidence
+    destination data are explicit discontinuity inputs. Disclosure, Metrics, legacy
+    VerifierResult, Public Verification, Human Gate, and Human Decision record construction is
+    deterministic; legacy checks and public-verification semantics remain caller-supplied and
+    are qualified against the authoritative chain. The function
     never executes a model/provider call or external transport, never generates verification
     findings, never chooses a Human decision, and never performs a state transition.
     Final-evidence publication is delegated exactly once to the
@@ -385,6 +401,7 @@ def compose_top_level_workflow(
     """
 
     run = _qualified_frozen_run(run_record)
+    bounded_context = _qualified_bounded_context(bounded_context_record)
     constructed_metrics = metrics.build_metrics(
         raw_source_bytes=metrics_raw_source_bytes,
         normalized_bytes=metrics_normalized_bytes,
@@ -400,13 +417,17 @@ def compose_top_level_workflow(
         identity_mismatch_count=metrics_identity_mismatch_count,
         observational_metadata=metrics_observational_metadata,
     )
+    if constructed_metrics.metrics_identity != bounded_context.metrics_identity:
+        raise WorkflowCompositionError(
+            "constructed Metrics are not bound to the qualified BoundedContextPackage"
+        )
     constructed_disclosure = disclosure.build_disclosure(
         classification=disclosure_classification,
         findings=disclosure_findings,
         observational_metadata=disclosure_observational_metadata,
     )
     context = cloud_boundary.admit_cloud_context(
-        bounded_context_record,
+        bounded_context,
         constructed_disclosure,
         run_identity=run.run_identity,
         mr03_package_identity=run.mr03_result_identity,
@@ -415,6 +436,17 @@ def compose_top_level_workflow(
         estimated_token_metadata=estimated_token_metadata,
         prohibited_assumptions=prohibited_assumptions,
         observational_metadata=context_observational_metadata,
+    )
+    legacy_input_identities = dict(bounded_context.input_identities)
+    legacy_input_identities["context_identity"] = context.context_identity
+    constructed_legacy_verifier = verifier.build_verifier_result(
+        input_identities=legacy_input_identities,
+        dependency_binding_identities=bounded_context.dependency_binding_identities,
+        provenance_identity=bounded_context.provenance_identity,
+        metrics_identity=constructed_metrics.metrics_identity,
+        contract_identities=verifier.FROZEN_CONTRACT_IDENTITIES,
+        checks=legacy_verifier_checks,
+        failure_records=verifier_failure_records,
     )
     request = cloud_boundary.build_cloud_request(
         context,
@@ -460,7 +492,7 @@ def compose_top_level_workflow(
         constructed_verification,
         proposal=admitted_proposal,
         context=context,
-        legacy_result=legacy_verifier_result,
+        legacy_result=constructed_legacy_verifier,
         failure_records=verifier_failure_records,
     )
     gate = _construct_human_gate(
@@ -493,14 +525,14 @@ def compose_top_level_workflow(
 
     evidence_args = {
         "run_record": run,
-        "bounded_context_record": bounded_context_record,
+        "bounded_context_record": bounded_context,
         "disclosure_record": constructed_disclosure,
         "cloud_context_record": context,
         "cloud_request_record": request,
         "proposal_record": admitted_proposal,
         "verification_record": supplied_verification,
         "metrics_record": constructed_metrics,
-        "legacy_verifier_result": legacy_verifier_result,
+        "legacy_verifier_result": constructed_legacy_verifier,
         "verifier_failure_records": verifier_failure_records,
         "human_gate_record": gate,
         "human_decision_record": decision,
