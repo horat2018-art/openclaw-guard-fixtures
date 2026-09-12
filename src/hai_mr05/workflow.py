@@ -323,7 +323,15 @@ def compose_top_level_workflow(
     provider_usage_if_available: Mapping[str, object] | None,
     error_metadata: Mapping[str, object] | None,
     legacy_verifier_result: object,
-    verification_record: object,
+    verification_result: object,
+    verification_reason_codes: object,
+    verification_reason_details: object,
+    verification_verified_source_refs: object,
+    verification_unsupported_claims: object,
+    verification_missing_refs: object,
+    verification_protected_content_findings: object,
+    verification_identity_findings: object,
+    verification_observational_metadata: Mapping[str, object] | None,
     approved_root: object,
     manifest_relative_path: object,
     final_result_relative_path: object,
@@ -348,11 +356,13 @@ def compose_top_level_workflow(
     """Compose supplied deterministic records without executing external authority.
 
     Authorized provider/account intent, already-obtained raw provider-response bytes,
-    non-secret actual transport metadata, Human Gate presentation/evidence material,
-    Human Decision material, and final-evidence destination data are explicit discontinuity
-    inputs. Human Gate and Human Decision record construction is deterministic and occurs
-    only for Human terminal states. The function never executes a model/provider call or
-    external transport, never chooses a Human decision, and never performs a state transition.
+    non-secret actual transport metadata, explicit public-verification semantic material,
+    Human Gate presentation/evidence material, Human Decision material, and final-evidence
+    destination data are explicit discontinuity inputs. Public Verification, Human Gate,
+    and Human Decision record construction is deterministic; verification semantics remain
+    caller-supplied and are adapter-qualified against the authoritative chain. The function
+    never executes a model/provider call or external transport, never generates verification
+    findings, never chooses a Human decision, and never performs a state transition.
     Final-evidence publication is delegated exactly once to the
     qualified evidence persistence boundary. A supplied
     run must be the authoritative FrozenRunRecord shape; the
@@ -399,8 +409,20 @@ def compose_top_level_workflow(
         raw_provider_response, response, request, authorization
     )
     _validate_remaining_proposal_bindings(admitted_proposal, run=run)
+    constructed_verification = verifier.build_verification_record(
+        proposal=admitted_proposal,
+        verification_result=verification_result,
+        reason_codes=verification_reason_codes,
+        reason_details=verification_reason_details,
+        verified_source_refs=verification_verified_source_refs,
+        unsupported_claims=verification_unsupported_claims,
+        missing_refs=verification_missing_refs,
+        protected_content_findings=verification_protected_content_findings,
+        identity_findings=verification_identity_findings,
+        observational_metadata=verification_observational_metadata,
+    )
     supplied_verification = verifier.validate_verification_adapter(
-        verification_record,
+        constructed_verification,
         proposal=admitted_proposal,
         context=context,
         legacy_result=legacy_verifier_result,

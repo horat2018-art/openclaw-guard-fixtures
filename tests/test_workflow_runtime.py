@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hai_mr05 import cloud_boundary, disclosure, evidence, failures, human_gate, proposal, workflow
+from hai_mr05 import cloud_boundary, disclosure, evidence, failures, human_gate, proposal, verifier, workflow
 try:
     import tests.test_final_result_runtime as _final_fixture_module
 except ModuleNotFoundError:
@@ -34,6 +34,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
     @staticmethod
     def _compose(chain, **overrides):
         raw, transport_metadata = WorkflowRuntimeTests._transport(chain)
+        verification = chain["verification"]
         args = {
             "run_record": chain["run"], "bounded_context_record": chain["bounded_context"],
             "disclosure_record": chain["disclosure"], "metrics_record": chain["metric"],
@@ -45,7 +46,28 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "authorization_observational_metadata": None,
             "raw_provider_response": raw,
             **transport_metadata,
-            "legacy_verifier_result": chain["legacy"], "verification_record": chain["verification"],
+            "legacy_verifier_result": chain["legacy"],
+            "verification_result": verification.verification_result,
+            "verification_reason_codes": verification.reason_codes,
+            "verification_reason_details": tuple(
+                item.to_dict() for item in verification.reason_details
+            ),
+            "verification_verified_source_refs": tuple(
+                item.to_dict() for item in verification.verified_source_refs
+            ),
+            "verification_unsupported_claims": verification.unsupported_claims,
+            "verification_missing_refs": verification.missing_refs,
+            "verification_protected_content_findings": tuple(
+                item.to_dict() for item in verification.protected_content_findings
+            ),
+            "verification_identity_findings": tuple(
+                item.to_dict() for item in verification.identity_findings
+            ),
+            "verification_observational_metadata": (
+                None
+                if verification.observational_metadata is None
+                else dict(verification.observational_metadata)
+            ),
             "manifest_relative_path": "manifest.json", "final_result_relative_path": "final.json",
             "verifier_failure_records": chain["verifier_failures"],
             "failure_record": chain["failure"],
@@ -188,6 +210,36 @@ class WorkflowRuntimeTests(unittest.TestCase):
             composed = self._compose(chain)
         delegated.assert_called_once()
         self.assertEqual(composed.proposal_record, chain["proposal"])
+
+    def test_public_verification_builder_is_exact_single_delegation_and_adapter_receives_it(self):
+        chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
+        original_builder = verifier.build_verification_record
+        original_adapter = verifier.validate_verification_adapter
+        with mock.patch.object(
+            verifier,
+            "build_verification_record",
+            side_effect=original_builder,
+        ) as builder, mock.patch.object(
+            verifier,
+            "validate_verification_adapter",
+            side_effect=original_adapter,
+        ) as adapter:
+            composed = self._compose(chain)
+        builder.assert_called_once()
+        self.assertGreaterEqual(adapter.call_count, 1)
+        build_call = builder.call_args
+        self.assertFalse(build_call.args)
+        self.assertEqual(build_call.kwargs["proposal"], composed.proposal_record)
+        self.assertEqual(
+            build_call.kwargs["verification_result"],
+            chain["verification"].verification_result,
+        )
+        self.assertNotIn("proposal_identity", build_call.kwargs)
+        self.assertEqual(composed.verification_record, chain["verification"])
+        first_adapter_call = adapter.call_args_list[0]
+        self.assertIs(first_adapter_call.args[0], composed.verification_record)
+        self.assertEqual(first_adapter_call.kwargs["proposal"], composed.proposal_record)
+        self.assertEqual(first_adapter_call.kwargs["context"], composed.cloud_context_record)
 
     def test_final_evidence_persistence_is_exact_single_delegation_and_observational_only(self):
         chain = _final_fixture_module.FinalResultRuntimeTests._full_chain()
@@ -501,6 +553,7 @@ class WorkflowRuntimeTests(unittest.TestCase):
         self.assertNotIn("cloud_execution_authorization_record", signature.parameters)
         self.assertNotIn("human_gate_record", signature.parameters)
         self.assertNotIn("human_decision_record", signature.parameters)
+        self.assertNotIn("verification_record", signature.parameters)
         for name in (
             "authorized_provider_identifier",
             "authorized_account_boundary_reference",
@@ -514,7 +567,15 @@ class WorkflowRuntimeTests(unittest.TestCase):
             "error_metadata",
             "human_authorization_reference",
             "model_identifier",
-            "verification_record",
+            "verification_result",
+            "verification_reason_codes",
+            "verification_reason_details",
+            "verification_verified_source_refs",
+            "verification_unsupported_claims",
+            "verification_missing_refs",
+            "verification_protected_content_findings",
+            "verification_identity_findings",
+            "verification_observational_metadata",
             "approved_root",
             "manifest_relative_path",
             "final_result_relative_path",
