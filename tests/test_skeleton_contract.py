@@ -21,7 +21,7 @@ class SkeletonContractTests(unittest.TestCase):
         self.assertEqual(contracts.MR05B_MASTER_CONTRACT_SHA256, '20462c72898252b9a31670c08a7c253e9a1a65d42363bc25151a2bebbff7c6bd')
         self.assertEqual(contracts.MR05B_CONTRACT_SET_SHA256, 'a78c2574bc15692e1e8e56b4ff1a91b19b11a4b0e4fc808db3577a158ef45cc9')
         self.assertEqual(contracts.MR03_EXPECTED_COMMIT, '945559bf0f1811cb2f88e827ff1412081f1fbd75')
-        self.assertEqual(contracts.MR04_EXPECTED_COMMIT, '8ce9eb8a542799e00088a6654e1061405fde7d33')
+        self.assertEqual(contracts.MR04_EXPECTED_COMMIT, '4352bf34fc34ed73fa47faf845fced7555fff10f')
         self.assertEqual(contracts.MR05C_R2_CONTRACT_SHA256, 'c7e561000b43677b65ffe8ce46ba44d679de9c75c1febe2471114bccd7072cf9')
         self.assertEqual(contracts.MR05D_R2_CONTRACT_SHA256, '44fac0d7abe60487202b7937ebe1055a347c1ab30dd0ef90e0e4fcccd1826000')
         self.assertEqual(contracts.MR05_PACKAGE_NAME, 'hai_mr05')
@@ -477,16 +477,16 @@ class SkeletonContractTests(unittest.TestCase):
                 'dependency_role': 'MR04_GUARD',
                 'dependency_logical_id': 'MR04',
                 'expected_dependency_class': 'FROZEN_MR04_LOWER_LEVEL_COMPOSITION',
-                'dependency_contract_identity': '0e110454fdd399db1564a2f7fdc581faabbea190ba0d668fc674243bbb414e32',
+                'dependency_contract_identity': '96bf068a0911d2eba0f50df1d25c128b205f49419b4777b7b7d5ca1f2308e20e',
                 'dependency_version_identity': None,
                 'dependency_content_identity': {
                     'kind': 'CONTENTSET',
-                    'sha256': 'a1da9509f5e5acc102be249978323bc9706cc893f178f96b70b9317750687b5f',
+                    'sha256': '04e7162fb0543a110a777a379652bb788dcf431b88f912bebe35c4fd9bc32ba5',
                 },
                 'dependency_snapshot': {
-                    'commit': '8ce9eb8a542799e00088a6654e1061405fde7d33',
-                    'parent': '85c3f65e23aba4c7307b5870d73c8192a72b46f5',
-                    'tree': 'a8944259034b699c285e2b8551ad60e3ee79d5c2',
+                    'commit': '4352bf34fc34ed73fa47faf845fced7555fff10f',
+                    'parent': '8ce9eb8a542799e00088a6654e1061405fde7d33',
+                    'tree': '107e8ac54c6985443f8ae3d39d6b3580cc6b1c76',
                     'pathset_sha256': '2b58d0ee14b2c8280b608ea9a8717228c68675d15630a80a2d06f63212ba4640',
                 },
             }
@@ -534,8 +534,8 @@ class SkeletonContractTests(unittest.TestCase):
             source_ref,
         )
         self.assertEqual(mr04.dependency_role, 'MR04_GUARD')
-        self.assertEqual(mr04.dependency_snapshot['commit'], '8ce9eb8a542799e00088a6654e1061405fde7d33')
-        self.assertEqual(mr04.binding_identity, 'c78560010e8598ca5af5462a5381f7e586ee65a03dfd5879bb9ebaf494b284bd')
+        self.assertEqual(mr04.dependency_snapshot['commit'], '4352bf34fc34ed73fa47faf845fced7555fff10f')
+        self.assertEqual(mr04.binding_identity, 'f3cf98e5e56f644dea52982f0f8b7b5e24bab738420c17a3cdb39152065c8ebf')
         self.assertEqual(mr04.binding_identity, identity.sha256_canonical(mr04.identity_payload))
         self.assertEqual(
             mr04_adapter.DependencyBinding.from_mapping(mr04.to_dict()).binding_identity,

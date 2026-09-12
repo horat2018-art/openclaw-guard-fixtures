@@ -13,6 +13,7 @@ import hashlib
 import importlib
 import json
 import os
+import stat
 import subprocess
 import sys
 from typing import NoReturn
@@ -329,10 +330,97 @@ def verify_mr04_dependency(root: str = MR04_CONTROLLED_WORKTREE) -> dict[str, ob
     }
 
 
-def _load_mr04_module(name: str):
+def _mr04_root_open_flags() -> int:
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    return flags
+
+
+def _open_pinned_mr04_root() -> int:
+    path = MR04_CONTROLLED_WORKTREE
+    if not os.path.isdir(path) or os.path.islink(path) or os.path.realpath(path) != path:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "MR04 root is missing, linked, or substituted")
+    try:
+        fd = os.open(path, _mr04_root_open_flags())
+    except OSError as exc:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, f"MR04 root open failed: {exc}")
+    try:
+        opened = os.fstat(fd)
+        current = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            _fail(FailureCode.SOURCE_PATH_ESCAPE, "MR04 root changed while being pinned")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _mr04_fd_root(fd: int) -> str:
+    path = f"/proc/self/fd/{fd}"
+    if not os.path.isdir(path):
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "pinned MR04 root descriptor is unavailable")
+    return path
+
+
+def _requalify_mr04_root(fd: int) -> None:
+    path = MR04_CONTROLLED_WORKTREE
+    if os.path.islink(path) or not os.path.isdir(path) or os.path.realpath(path) != path:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "MR04 root pathname changed during execution")
+    try:
+        opened = os.fstat(fd)
+        current = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, f"MR04 root requalification failed: {exc}")
+    if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+        _fail(FailureCode.SOURCE_PATH_ESCAPE, "MR04 root identity changed during execution")
+
+
+def _verify_mr04_dependency_fd(fd: int) -> dict[str, object]:
+    root = _mr04_fd_root(fd)
+    try:
+        head = subprocess.check_output(
+            ["git", "-C", root, "rev-parse", "HEAD"],
+            text=True, timeout=5, pass_fds=(fd,),
+        ).strip()
+        tree = subprocess.check_output(
+            ["git", "-C", root, "rev-parse", "HEAD^{tree}"],
+            text=True, timeout=5, pass_fds=(fd,),
+        ).strip()
+    except Exception as exc:
+        _fail(FailureCode.MR05_MR04_DEPENDENCY_IDENTITY_MISMATCH, f"pinned MR04 identity check failed: {exc}")
+    pathset, contentset = _mr04_fileset(root)
+    if (
+        head != MR04_EXPECTED_COMMIT
+        or tree != MR04_EXPECTED_TREE
+        or pathset != MR04_PATHSET_SHA256
+        or contentset != MR04_CONTENTSET_SHA256
+    ):
+        _fail(FailureCode.MR05_MR04_DEPENDENCY_IDENTITY_MISMATCH, "pinned MR04 identity mismatch")
+    return {
+        "commit": MR04_EXPECTED_COMMIT,
+        "tree": MR04_EXPECTED_TREE,
+        "pathset_sha256": MR04_PATHSET_SHA256,
+        "contentset_sha256": MR04_CONTENTSET_SHA256,
+        "resolve_once": True,
+        "checked_path_equals_executed_path": True,
+    }
+
+
+def _purge_mr04_modules() -> None:
+    for key in tuple(sys.modules):
+        if key == "hai_mr04" or key.startswith("hai_mr04."):
+            sys.modules.pop(key, None)
+
+
+def _load_mr04_module(name: str, root_fd: int | None = None):
     if name not in _MR04_MODULES:
         _fail(FailureCode.MR05_INTERNAL_INVARIANT, "MR04 module is outside the qualified callable set")
-    source_root = os.path.join(MR04_CONTROLLED_WORKTREE, "src")
+    if root_fd is None:
+        source_root = os.path.join(MR04_CONTROLLED_WORKTREE, "src")
+    else:
+        source_root = os.path.join(_mr04_fd_root(root_fd), "src")
     inserted = False
     if source_root not in sys.path:
         sys.path.insert(0, source_root)
@@ -349,7 +437,6 @@ def _load_mr04_module(name: str):
     if not module_path.startswith(expected_prefix):
         _fail(FailureCode.MR05_MR04_DEPENDENCY_IDENTITY_MISMATCH, "MR04 module path substitution")
     return module
-
 
 def _identity_record(fields: Mapping[str, object], identity_field: str) -> dict[str, object]:
     result = dict(fields)
@@ -462,7 +549,7 @@ def invoke_mr03(
     source_set_identity: str,
     capture_identity: str,
 ) -> dict[str, object]:
-    """Invoke MR-03 exactly once through the frozen MR-04 read-only adapter."""
+    """Invoke MR-03 exactly once through the descriptor-pinned MR-04 adapter."""
 
     invocation = build_mr03_invocation(
         task_identity=task_identity,
@@ -470,14 +557,21 @@ def invoke_mr03(
         source_set_identity=source_set_identity,
         capture_identity=capture_identity,
     )
-    verify_mr04_dependency()
-    adapter = _load_mr04_module("hai_mr04.mr03_adapter")
+    root_fd = _open_pinned_mr04_root()
     try:
-        payload = _validate_mr03_payload(adapter.invoke_read_only(source, dict(task)))
-    except DependencyRuntimeError:
-        raise
-    except BaseException as exc:
-        _map_mr03_exception(exc)
+        _verify_mr04_dependency_fd(root_fd)
+        _purge_mr04_modules()
+        adapter = _load_mr04_module("hai_mr04.mr03_adapter", root_fd)
+        try:
+            payload = _validate_mr03_payload(adapter.invoke_read_only(source, dict(task)))
+        except DependencyRuntimeError:
+            raise
+        except BaseException as exc:
+            _map_mr03_exception(exc)
+        _requalify_mr04_root(root_fd)
+    finally:
+        _purge_mr04_modules()
+        os.close(root_fd)
     references = sorted(
         payload["L4_PROVENANCE_REFERENCES"],
         key=lambda item: canonical_json_bytes(item),
@@ -506,6 +600,31 @@ def invoke_mr03(
     return _identity_record(semantic, "result_identity")
 
 
+def _build_mr04_invocation_with_dependency(
+    dependency_identity: Mapping[str, object],
+    *,
+    task_identity: str,
+    source_set_identity: str,
+    normalization_identity: str,
+    mr03_result_identity: str,
+    byte_budget: Mapping[str, object],
+    token_estimate_metadata: Mapping[str, object],
+) -> dict[str, object]:
+    semantic = {
+        "schema_version": SCHEMA_VERSION,
+        "mr04_dependency_identity": dict(dependency_identity),
+        "task_identity": _sha(task_identity, "task_identity"),
+        "source_set_identity": _sha(source_set_identity, "source_set_identity"),
+        "normalization_identity": _sha(normalization_identity, "normalization_identity"),
+        "mr03_result_identity": _sha(mr03_result_identity, "mr03_result_identity"),
+        "byte_budget": _validate_byte_budget(byte_budget),
+        "token_estimate_metadata": _validate_token_estimate_metadata(token_estimate_metadata),
+        "expected_interface_identity": MR04_INTERFACE_IDENTITY,
+        "call_mode": MR04_CALL_MODE,
+    }
+    return _identity_record(semantic, "invocation_identity")
+
+
 def build_mr04_invocation(
     *,
     task_identity: str,
@@ -517,19 +636,15 @@ def build_mr04_invocation(
 ) -> dict[str, object]:
     """Build the frozen MR-04 lower-level composition invocation record."""
 
-    semantic = {
-        "schema_version": SCHEMA_VERSION,
-        "mr04_dependency_identity": verify_mr04_dependency(),
-        "task_identity": _sha(task_identity, "task_identity"),
-        "source_set_identity": _sha(source_set_identity, "source_set_identity"),
-        "normalization_identity": _sha(normalization_identity, "normalization_identity"),
-        "mr03_result_identity": _sha(mr03_result_identity, "mr03_result_identity"),
-        "byte_budget": _validate_byte_budget(byte_budget),
-        "token_estimate_metadata": _validate_token_estimate_metadata(token_estimate_metadata),
-        "expected_interface_identity": MR04_INTERFACE_IDENTITY,
-        "call_mode": MR04_CALL_MODE,
-    }
-    return _identity_record(semantic, "invocation_identity")
+    return _build_mr04_invocation_with_dependency(
+        verify_mr04_dependency(),
+        task_identity=task_identity,
+        source_set_identity=source_set_identity,
+        normalization_identity=normalization_identity,
+        mr03_result_identity=mr03_result_identity,
+        byte_budget=byte_budget,
+        token_estimate_metadata=token_estimate_metadata,
+    )
 
 
 def invoke_mr04(
@@ -543,39 +658,48 @@ def invoke_mr04(
     byte_budget: Mapping[str, object],
     token_estimate_metadata: Mapping[str, object],
 ) -> dict[str, object]:
-    """Run only the qualified frozen MR-04 lower-level composition callables."""
+    """Run only the qualified MR-04 callables from one pinned verified root."""
 
     mr03_record = _mapping(mr03_result, "mr03_result")
     mr03_result_identity = _sha(mr03_record.get("result_identity"), "mr03_result_identity")
     mr03_payload = _validate_mr03_payload(mr03_record.get("mr03_payload"))
-    invocation = build_mr04_invocation(
-        task_identity=task_identity,
-        source_set_identity=source_set_identity,
-        normalization_identity=normalization_identity,
-        mr03_result_identity=mr03_result_identity,
-        byte_budget=byte_budget,
-        token_estimate_metadata=token_estimate_metadata,
-    )
-    discovery_module = _load_mr04_module("hai_mr04.discovery")
-    normalization_module = _load_mr04_module("hai_mr04.normalization")
-    provenance_module = _load_mr04_module("hai_mr04.provenance")
-    context_module = _load_mr04_module("hai_mr04.bounded_context")
+    root_fd = _open_pinned_mr04_root()
     try:
-        discovered = discovery_module.discover(source_root)
-        rows = normalization_module.normalize(discovered)
-        provenance_module.validate(rows)
-        package = context_module.build(rows, task=dict(task), mr03_output=mr03_payload)
-        package_identity = context_module.package_identity_from_semantics(package)
-        package_sha256 = context_module.package_sha256_from_content(package)
-    except DependencyRuntimeError:
-        raise
-    except BaseException as exc:
-        code = getattr(exc, "code", getattr(exc, "failure_code", None))
-        if isinstance(code, str) and code in _PRESERVED_CODES:
-            _fail(code, str(exc))
-        _fail(FailureCode.MR05_MR04_DEPENDENCY_IDENTITY_MISMATCH, f"MR04 composition failed: {exc}")
-    if package.get("package_identity") != package_identity or package.get("package_sha256") != package_sha256:
-        _fail(FailureCode.MR05_MR04_DEPENDENCY_IDENTITY_MISMATCH, "MR04 package derived identity mismatch")
+        dependency_identity = _verify_mr04_dependency_fd(root_fd)
+        invocation = _build_mr04_invocation_with_dependency(
+            dependency_identity,
+            task_identity=task_identity,
+            source_set_identity=source_set_identity,
+            normalization_identity=normalization_identity,
+            mr03_result_identity=mr03_result_identity,
+            byte_budget=byte_budget,
+            token_estimate_metadata=token_estimate_metadata,
+        )
+        _purge_mr04_modules()
+        discovery_module = _load_mr04_module("hai_mr04.discovery", root_fd)
+        normalization_module = _load_mr04_module("hai_mr04.normalization", root_fd)
+        provenance_module = _load_mr04_module("hai_mr04.provenance", root_fd)
+        context_module = _load_mr04_module("hai_mr04.bounded_context", root_fd)
+        try:
+            discovered = discovery_module.discover(source_root)
+            rows = normalization_module.normalize(discovered)
+            provenance_module.validate(rows)
+            package = context_module.build(rows, task=dict(task), mr03_output=mr03_payload)
+            package_identity = context_module.package_identity_from_semantics(package)
+            package_sha256 = context_module.package_sha256_from_content(package)
+        except DependencyRuntimeError:
+            raise
+        except BaseException as exc:
+            code = getattr(exc, "code", getattr(exc, "failure_code", None))
+            if isinstance(code, str) and code in _PRESERVED_CODES:
+                _fail(code, str(exc))
+            _fail(FailureCode.MR05_MR04_DEPENDENCY_IDENTITY_MISMATCH, f"MR04 composition failed: {exc}")
+        if package.get("package_identity") != package_identity or package.get("package_sha256") != package_sha256:
+            _fail(FailureCode.MR05_MR04_DEPENDENCY_IDENTITY_MISMATCH, "MR04 package derived identity mismatch")
+        _requalify_mr04_root(root_fd)
+    finally:
+        _purge_mr04_modules()
+        os.close(root_fd)
     semantic = {
         "schema_version": SCHEMA_VERSION,
         "invocation_identity": invocation["invocation_identity"],

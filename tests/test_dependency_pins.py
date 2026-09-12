@@ -6,7 +6,7 @@ from hai_mr05 import contracts, failures
 class DependencyPinTests(unittest.TestCase):
     def test_full_commit_pins(self):
         self.assertEqual(contracts.MR03_EXPECTED_COMMIT, '945559bf0f1811cb2f88e827ff1412081f1fbd75')
-        self.assertEqual(contracts.MR04_EXPECTED_COMMIT, '8ce9eb8a542799e00088a6654e1061405fde7d33')
+        self.assertEqual(contracts.MR04_EXPECTED_COMMIT, '4352bf34fc34ed73fa47faf845fced7555fff10f')
         self.assertEqual(len(contracts.MR03_EXPECTED_COMMIT), 40)
         self.assertEqual(len(contracts.MR04_EXPECTED_COMMIT), 40)
         self.assertTrue(contracts.is_known_schema('mr05.metrics'))

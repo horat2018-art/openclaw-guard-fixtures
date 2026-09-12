@@ -100,16 +100,16 @@ class CloudBoundaryRuntimeTests(unittest.TestCase):
                 "dependency_role": "MR04_GUARD",
                 "dependency_logical_id": "MR04",
                 "expected_dependency_class": "FROZEN_MR04_LOWER_LEVEL_COMPOSITION",
-                "dependency_contract_identity": "0e110454fdd399db1564a2f7fdc581faabbea190ba0d668fc674243bbb414e32",
+                "dependency_contract_identity": "96bf068a0911d2eba0f50df1d25c128b205f49419b4777b7b7d5ca1f2308e20e",
                 "dependency_version_identity": None,
                 "dependency_content_identity": {
                     "kind": "CONTENTSET",
-                    "sha256": "a1da9509f5e5acc102be249978323bc9706cc893f178f96b70b9317750687b5f",
+                    "sha256": "04e7162fb0543a110a777a379652bb788dcf431b88f912bebe35c4fd9bc32ba5",
                 },
                 "dependency_snapshot": {
-                    "commit": "8ce9eb8a542799e00088a6654e1061405fde7d33",
-                    "parent": "85c3f65e23aba4c7307b5870d73c8192a72b46f5",
-                    "tree": "a8944259034b699c285e2b8551ad60e3ee79d5c2",
+                    "commit": "4352bf34fc34ed73fa47faf845fced7555fff10f",
+                    "parent": "8ce9eb8a542799e00088a6654e1061405fde7d33",
+                    "tree": "107e8ac54c6985443f8ae3d39d6b3580cc6b1c76",
                     "pathset_sha256": "2b58d0ee14b2c8280b608ea9a8717228c68675d15630a80a2d06f63212ba4640",
                 },
             }

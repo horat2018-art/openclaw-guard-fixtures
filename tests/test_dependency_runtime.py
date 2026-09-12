@@ -517,7 +517,7 @@ class DependencyRuntimeTests(unittest.TestCase):
         with mock.patch.object(dependency_runtime, 'verify_mr04_dependency', return_value={}), mock.patch.object(
             dependency_runtime,
             '_load_mr04_module',
-            side_effect=lambda name: modules[name],
+            side_effect=lambda name, root_fd=None: modules[name],
         ):
             first = dependency_runtime.invoke_mr04(
                 '/capture',
@@ -578,6 +578,51 @@ class DependencyRuntimeTests(unittest.TestCase):
             self.assertEqual(module.AUTH_IMPLEMENTATION_COUNT, 0)
             self.assertEqual(module.AUTO_RETRY_IMPLEMENTATION_COUNT, 0)
             self.assertEqual(module.AUTO_FALLBACK_IMPLEMENTATION_COUNT, 0)
+
+
+    def test_pinned_mr04_root_loads_original_then_rejects_path_replacement(self):
+        import os
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            parent = pathlib.Path(d)
+            root = parent / 'mr04'
+            root.mkdir()
+            package = root / 'src' / 'hai_mr04'
+            package.mkdir(parents=True)
+            (package / '__init__.py').write_text('')
+            (package / 'discovery.py').write_text('MARKER = "ORIGINAL"\n')
+            subprocess.check_call(['git', 'init', '-q'], cwd=root)
+            subprocess.check_call(['git', 'add', '.'], cwd=root)
+            subprocess.check_call(['git', '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture'], cwd=root)
+            head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+            tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], cwd=root, text=True).strip()
+            pathset, contentset = dependency_runtime._mr04_fileset(str(root))
+            with mock.patch.object(dependency_runtime, 'MR04_CONTROLLED_WORKTREE', str(root)), mock.patch.object(
+                dependency_runtime, 'MR04_EXPECTED_COMMIT', head
+            ), mock.patch.object(dependency_runtime, 'MR04_EXPECTED_TREE', tree), mock.patch.object(
+                dependency_runtime, 'MR04_PATHSET_SHA256', pathset
+            ), mock.patch.object(dependency_runtime, 'MR04_CONTENTSET_SHA256', contentset):
+                fd = dependency_runtime._open_pinned_mr04_root()
+                try:
+                    verified = dependency_runtime._verify_mr04_dependency_fd(fd)
+                    self.assertEqual(verified['commit'], head)
+                    moved = parent / 'moved'
+                    root.rename(moved)
+                    replacement = root / 'src' / 'hai_mr04'
+                    replacement.mkdir(parents=True)
+                    (replacement / '__init__.py').write_text('')
+                    (replacement / 'discovery.py').write_text('MARKER = "REPLACEMENT"\n')
+                    dependency_runtime._purge_mr04_modules()
+                    loaded = dependency_runtime._load_mr04_module('hai_mr04.discovery', fd)
+                    self.assertEqual(loaded.MARKER, 'ORIGINAL')
+                    with self.assertRaises(dependency_runtime.DependencyRuntimeError) as raised:
+                        dependency_runtime._requalify_mr04_root(fd)
+                    self.assertEqual(raised.exception.code, FailureCode.SOURCE_PATH_ESCAPE.value)
+                finally:
+                    dependency_runtime._purge_mr04_modules()
+                    os.close(fd)
 
 
 if __name__ == '__main__':
