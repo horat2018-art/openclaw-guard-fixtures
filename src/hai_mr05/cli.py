@@ -27,7 +27,12 @@ from .failures import phase_not_implemented
 OFFLINE_CLI_SCHEMA_VERSION = "1.0.0"
 OFFLINE_CLI_OPERATION = "OFFLINE_COMPOSE_PREOBTAINED_RESPONSE"
 OFFLINE_CLI_COMMAND = "offline"
+PREPARE_CLI_OPERATION = "PREPARE_PRE_SEND_HANDOFF"
+PREPARE_CLI_COMMAND = "prepare"
+RESUME_CLI_OPERATION = "RESUME_PREOBTAINED_RESPONSE"
+RESUME_CLI_COMMAND = "resume"
 OFFLINE_CLI_IMPLEMENTATION_COUNT = 1
+TWO_STEP_CLI_IMPLEMENTATION_COUNT = 1
 OFFLINE_CLI_INPUT_TRANSPORT = "STDIN_JSON_ONLY"
 OFFLINE_CLI_RAW_RESPONSE_ENCODING = "BASE64_EXACT_BYTES"
 OFFLINE_CLI_MAX_INPUT_BYTES = 8 * 1024 * 1024
@@ -125,6 +130,98 @@ _WORKFLOW_OPTIONAL_FIELDS = frozenset(
 )
 _WORKFLOW_FIELDS = _WORKFLOW_REQUIRED_FIELDS | _WORKFLOW_OPTIONAL_FIELDS
 
+_PREPARE_TOP_LEVEL_FIELDS = frozenset(
+    {"schema_version", "operation", "prepare_arguments"}
+)
+_PREPARE_REQUIRED_FIELDS = frozenset(
+    {
+        "run_record",
+        "bounded_context_record",
+        "disclosure_classification",
+        "disclosure_findings",
+        "disclosure_observational_metadata",
+        "metrics_raw_source_bytes",
+        "metrics_normalized_bytes",
+        "metrics_package_bytes",
+        "metrics_cloud_context_bytes",
+        "metrics_raw_estimated_tokens",
+        "metrics_cloud_estimated_tokens",
+        "metrics_model_call_count",
+        "metrics_model_retry_count",
+        "metrics_failure_count",
+        "metrics_source_ref_count",
+        "metrics_missing_source_ref_count",
+        "metrics_identity_mismatch_count",
+        "metrics_observational_metadata",
+        "model_identifier",
+        "human_authorization_reference",
+        "estimated_token_metadata",
+        "authorized_provider_identifier",
+        "authorized_account_boundary_reference",
+        "authorization_observational_metadata",
+        "legacy_verifier_checks",
+    }
+)
+_PREPARE_OPTIONAL_FIELDS = frozenset(
+    {
+        "verifier_failure_records",
+        "prohibited_assumptions",
+        "context_observational_metadata",
+        "request_observational_metadata",
+    }
+)
+_PREPARE_FIELDS = _PREPARE_REQUIRED_FIELDS | _PREPARE_OPTIONAL_FIELDS
+
+_RESUME_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "operation",
+        "prepared_workflow",
+        "resume_arguments",
+        "raw_provider_response_base64",
+    }
+)
+_RESUME_REQUIRED_FIELDS = frozenset(
+    {
+        "provider_identifier",
+        "actual_model_identifier",
+        "provider_request_id",
+        "account_boundary_reference",
+        "provider_usage_if_available",
+        "error_metadata",
+        "verification_result",
+        "verification_reason_codes",
+        "verification_reason_details",
+        "verification_verified_source_refs",
+        "verification_unsupported_claims",
+        "verification_missing_refs",
+        "verification_protected_content_findings",
+        "verification_identity_findings",
+        "verification_observational_metadata",
+        "approved_root",
+        "manifest_relative_path",
+        "final_result_relative_path",
+    }
+)
+_RESUME_OPTIONAL_FIELDS = frozenset(
+    {
+        "human_gate_task_summary",
+        "human_gate_proposal_summary",
+        "human_gate_uncertainties",
+        "human_gate_evidence_pointers",
+        "human_gate_observational_metadata",
+        "human_decision",
+        "human_decision_reason",
+        "human_decision_scope",
+        "human_decision_authority_reference",
+        "human_decision_observational_metadata",
+        "failure_record",
+        "manifest_observational_metadata",
+        "final_observational_metadata",
+    }
+)
+_RESUME_FIELDS = _RESUME_REQUIRED_FIELDS | _RESUME_OPTIONAL_FIELDS
+
 
 class OfflineCLIValidationError(ValueError):
     """The bounded offline CLI request is malformed or outside its contract."""
@@ -187,6 +284,47 @@ def _workflow_signature_contract() -> tuple[frozenset[str], frozenset[str]]:
     return _WORKFLOW_FIELDS, _WORKFLOW_REQUIRED_FIELDS
 
 
+def _prepare_signature_contract() -> tuple[frozenset[str], frozenset[str]]:
+    signature = inspect.signature(workflow.prepare_top_level_workflow)
+    observed_fields: set[str] = set()
+    observed_required: set[str] = set()
+    for name, parameter in signature.parameters.items():
+        if parameter.kind not in {
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }:
+            raise OfflineCLIValidationError("prepare workflow signature contains unsupported parameter kind")
+        observed_fields.add(name)
+        if parameter.default is inspect.Parameter.empty:
+            observed_required.add(name)
+    if observed_fields != _PREPARE_FIELDS or observed_required != _PREPARE_REQUIRED_FIELDS:
+        raise OfflineCLIValidationError("prepare workflow signature drifted from frozen CLI contract")
+    return _PREPARE_FIELDS, _PREPARE_REQUIRED_FIELDS
+
+
+def _resume_signature_contract() -> tuple[frozenset[str], frozenset[str]]:
+    signature = inspect.signature(workflow.resume_top_level_workflow)
+    observed_fields: set[str] = set()
+    observed_required: set[str] = set()
+    excluded = {"prepared_package", "raw_provider_response"}
+    for name, parameter in signature.parameters.items():
+        if parameter.kind not in {
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }:
+            raise OfflineCLIValidationError("resume workflow signature contains unsupported parameter kind")
+        if name in excluded:
+            if parameter.default is not inspect.Parameter.empty:
+                raise OfflineCLIValidationError("resume discontinuity contract drifted")
+            continue
+        observed_fields.add(name)
+        if parameter.default is inspect.Parameter.empty:
+            observed_required.add(name)
+    if observed_fields != _RESUME_FIELDS or observed_required != _RESUME_REQUIRED_FIELDS:
+        raise OfflineCLIValidationError("resume workflow signature drifted from frozen CLI contract")
+    return _RESUME_FIELDS, _RESUME_REQUIRED_FIELDS
+
+
 def _parse_request(text: str) -> tuple[dict[str, object], bytes]:
     try:
         value = canonical.parse_json_no_duplicates(text)
@@ -213,11 +351,67 @@ def _parse_request(text: str) -> tuple[dict[str, object], bytes]:
     return arguments, _decode_raw_response(request["raw_provider_response_base64"])
 
 
-def _result_summary(result: workflow.WorkflowCompositionResult) -> dict[str, object]:
+def _parse_prepare_request(text: str) -> dict[str, object]:
+    try:
+        value = canonical.parse_json_no_duplicates(text)
+    except (TypeError, ValueError, canonical.CanonicalizationError) as exc:
+        raise OfflineCLIValidationError("prepare request is not strict duplicate-free JSON") from exc
+    request = _mapping(value, "prepare request")
+    if set(request) != _PREPARE_TOP_LEVEL_FIELDS:
+        raise OfflineCLIValidationError("prepare request fields are not exact")
+    if request["schema_version"] != OFFLINE_CLI_SCHEMA_VERSION:
+        raise OfflineCLIValidationError("prepare request schema_version is unsupported")
+    if request["operation"] != PREPARE_CLI_OPERATION:
+        raise OfflineCLIValidationError("prepare request operation is unsupported")
+    arguments = dict(_mapping(request["prepare_arguments"], "prepare_arguments"))
+    allowed, required = _prepare_signature_contract()
+    if set(arguments) - allowed:
+        raise OfflineCLIValidationError("prepare_arguments contain unsupported fields")
+    if required - set(arguments):
+        raise OfflineCLIValidationError("prepare_arguments are missing required fields")
+    return arguments
+
+
+def _parse_resume_request(
+    text: str,
+) -> tuple[workflow.PreSendWorkflowPackage, dict[str, object], bytes]:
+    try:
+        value = canonical.parse_json_no_duplicates(text, identity_critical=False)
+    except (TypeError, ValueError, canonical.CanonicalizationError) as exc:
+        raise OfflineCLIValidationError("resume request is not strict duplicate-free JSON") from exc
+    request = _mapping(value, "resume request")
+    if set(request) != _RESUME_TOP_LEVEL_FIELDS:
+        raise OfflineCLIValidationError("resume request fields are not exact")
+    if request["schema_version"] != OFFLINE_CLI_SCHEMA_VERSION:
+        raise OfflineCLIValidationError("resume request schema_version is unsupported")
+    if request["operation"] != RESUME_CLI_OPERATION:
+        raise OfflineCLIValidationError("resume request operation is unsupported")
+    prepared = workflow.validate_pre_send_workflow_package(
+        workflow.PreSendWorkflowPackage.from_mapping(
+            _mapping(request["prepared_workflow"], "prepared_workflow")
+        )
+    )
+    arguments = dict(_mapping(request["resume_arguments"], "resume_arguments"))
+    if "prepared_package" in arguments or "raw_provider_response" in arguments:
+        raise OfflineCLIValidationError("resume discontinuities must use bounded top-level fields")
+    allowed, required = _resume_signature_contract()
+    if set(arguments) - allowed:
+        raise OfflineCLIValidationError("resume_arguments contain unsupported fields")
+    if required - set(arguments):
+        raise OfflineCLIValidationError("resume_arguments are missing required fields")
+    raw = _decode_raw_response(request["raw_provider_response_base64"])
+    return prepared, arguments, raw
+
+
+def _result_summary(
+    result: workflow.WorkflowCompositionResult,
+    *,
+    operation: str = OFFLINE_CLI_OPERATION,
+) -> dict[str, object]:
     persistence = result.final_evidence_persistence_result
     return {
         "schema_version": OFFLINE_CLI_SCHEMA_VERSION,
-        "operation": OFFLINE_CLI_OPERATION,
+        "operation": operation,
         "status": "PASS",
         "run_identity": result.run_record.run_identity,
         "request_identity": result.cloud_request_record.request_identity,
@@ -246,7 +440,7 @@ def _write_json(stream: TextIO, value: Mapping[str, object]) -> None:
 
 
 def run_offline(*, stdin: TextIO, stdout: TextIO) -> workflow.WorkflowCompositionResult:
-    """Execute one bounded offline composition from strict stdin JSON."""
+    """Execute one bounded one-shot offline composition from strict stdin JSON."""
 
     arguments, raw_response = _parse_request(_read_bounded_text(stdin))
     result = workflow.compose_top_level_workflow(
@@ -257,6 +451,44 @@ def run_offline(*, stdin: TextIO, stdout: TextIO) -> workflow.WorkflowCompositio
     return result
 
 
+def run_prepare(*, stdin: TextIO, stdout: TextIO) -> workflow.PreSendWorkflowPackage:
+    """Build and emit one exact pre-send package without executing transport."""
+
+    arguments = _parse_prepare_request(_read_bounded_text(stdin))
+    prepared = workflow.prepare_top_level_workflow(**arguments)
+    _write_json(
+        stdout,
+        {
+            "schema_version": OFFLINE_CLI_SCHEMA_VERSION,
+            "operation": PREPARE_CLI_OPERATION,
+            "status": "PASS",
+            "prepared_workflow": prepared.to_dict(),
+            "pre_send_identity": prepared.pre_send_identity,
+            "request_identity": prepared.cloud_request_record.request_identity,
+            "authorization_identity": prepared.cloud_execution_authorization_record.authorization_identity,
+            "handoff_identity": prepared.cloud_execution_handoff_record.handoff_identity,
+            "execution_authority": prepared.execution_authority,
+            "network_authority": False,
+            "model_provider_authority": False,
+            "state_transition_execution_authority": False,
+        },
+    )
+    return prepared
+
+
+def run_resume(*, stdin: TextIO, stdout: TextIO) -> workflow.WorkflowCompositionResult:
+    """Resume one exact pre-send package with already-obtained response bytes."""
+
+    prepared, arguments, raw_response = _parse_resume_request(_read_bounded_text(stdin))
+    result = workflow.resume_top_level_workflow(
+        prepared_package=prepared,
+        raw_provider_response=raw_response,
+        **arguments,
+    )
+    _write_json(stdout, _result_summary(result, operation=RESUME_CLI_OPERATION))
+    return result
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -264,17 +496,24 @@ def main(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
-    """Run only the explicit bounded offline command; all other CLI use fails closed."""
+    """Run only explicit bounded offline commands; all other CLI use fails closed."""
 
     args = tuple(sys.argv[1:] if argv is None else argv)
-    if args != (OFFLINE_CLI_COMMAND,):
+    operations = {
+        (OFFLINE_CLI_COMMAND,): (OFFLINE_CLI_OPERATION, run_offline),
+        (PREPARE_CLI_COMMAND,): (PREPARE_CLI_OPERATION, run_prepare),
+        (RESUME_CLI_COMMAND,): (RESUME_CLI_OPERATION, run_resume),
+    }
+    selected = operations.get(args)
+    if selected is None:
         phase_not_implemented("cli")
+    operation, runner = selected
 
     input_stream = sys.stdin if stdin is None else stdin
     output_stream = sys.stdout if stdout is None else stdout
     error_stream = sys.stderr if stderr is None else stderr
     try:
-        run_offline(stdin=input_stream, stdout=output_stream)
+        runner(stdin=input_stream, stdout=output_stream)
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
@@ -282,7 +521,7 @@ def main(
             error_stream,
             {
                 "schema_version": OFFLINE_CLI_SCHEMA_VERSION,
-                "operation": OFFLINE_CLI_OPERATION,
+                "operation": operation,
                 "status": "FAIL_CLOSED",
                 "error_type": type(exc).__name__,
             },
@@ -298,11 +537,18 @@ if __name__ == "__main__":
 __all__ = [
     "OfflineCLIValidationError",
     "run_offline",
+    "run_prepare",
+    "run_resume",
     "main",
     "OFFLINE_CLI_SCHEMA_VERSION",
     "OFFLINE_CLI_OPERATION",
     "OFFLINE_CLI_COMMAND",
+    "PREPARE_CLI_OPERATION",
+    "PREPARE_CLI_COMMAND",
+    "RESUME_CLI_OPERATION",
+    "RESUME_CLI_COMMAND",
     "OFFLINE_CLI_IMPLEMENTATION_COUNT",
+    "TWO_STEP_CLI_IMPLEMENTATION_COUNT",
     "OFFLINE_CLI_INPUT_TRANSPORT",
     "OFFLINE_CLI_RAW_RESPONSE_ENCODING",
     "OFFLINE_CLI_MAX_INPUT_BYTES",
