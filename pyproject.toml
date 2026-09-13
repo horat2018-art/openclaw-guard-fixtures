@@ -5,6 +5,9 @@ description = "HAI MR-05 qualified deterministic runtime with live external exec
 requires-python = ">=3.12"
 dependencies = []
 
+[project.scripts]
+hai-mr05 = "hai_mr05.cli:main"
+
 [tool.hai_mr05.skeleton]
 phase = "HAI-MR-05C-R2"
 package = "hai_mr05"
@@ -14,9 +17,10 @@ test_command = "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest dis
 implementation = "HISTORICAL_FROZEN_BASELINE"
 
 [tool.hai_mr05.runtime]
-qualified_through = "HAI-MR-20A-R2"
+qualified_through = "HAI-MR-22A-R2"
 deterministic_runtime = "QUALIFIED_IMPLEMENTED"
-cli = "INTENTIONALLY_UNAVAILABLE"
+cli = "OFFLINE_PRELIVE_QUALIFIED"
+offline_cli_transport = "STDIN_JSON_PREOBTAINED_RESPONSE_ONLY"
 live_external_execution = "NOT_IMPLEMENTED"
 network_authority = false
 provider_client_authority = false
