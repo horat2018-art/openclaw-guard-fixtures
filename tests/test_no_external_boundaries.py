@@ -42,6 +42,34 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('FILESYSTEM_SOURCE_READ_COUNT = 1', text)
                 self.assertIn('AUTO_RETRY_IMPLEMENTATION_COUNT = 0', text)
                 self.assertIn('AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0', text)
+            elif path.name == 'local_orchestration.py':
+                for token in dependency_operational_tokens + source_read_tokens + evidence_write_tokens:
+                    with self.subTest(path=path.name, token=token):
+                        self.assertNotIn(token, text)
+                self.assertIn('LOCAL_SOURCE_ORCHESTRATION_IMPLEMENTATION_COUNT = 1', text)
+                self.assertIn('FILESYSTEM_SOURCE_READ_COUNT = 1', text)
+                self.assertEqual(text.count('source_acquisition.capture_source('), 1)
+                self.assertEqual(text.count('materialization.materialize_prepare_inputs('), 1)
+                self.assertEqual(text.count('workflow.prepare_top_level_workflow('), 1)
+                for name in (
+                    'FILESYSTEM_WRITE_COUNT = 0',
+                    'DEPENDENCY_EXECUTION_COUNT = 0',
+                    'SUBPROCESS_EXECUTION_COUNT = 0',
+                    'NETWORK_IMPLEMENTATION_COUNT = 0',
+                    'PROVIDER_CLIENT_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_CALL_IMPLEMENTATION_COUNT = 0',
+                    'MODEL_ROUTING_IMPLEMENTATION_COUNT = 0',
+                    'AUTH_IMPLEMENTATION_COUNT = 0',
+                    'AUTO_RETRY_IMPLEMENTATION_COUNT = 0',
+                    'AUTO_FALLBACK_IMPLEMENTATION_COUNT = 0',
+                    'HUMAN_APPROVAL_EXECUTION_COUNT = 0',
+                    'HUMAN_DECISION_SIDE_EFFECT_COUNT = 0',
+                    'STATE_TRANSITION_EXECUTION_COUNT = 0',
+                    'GIT_OPERATION_COUNT = 0',
+                    'LIVE_CLOUD_EXECUTION_COUNT = 0',
+                ):
+                    with self.subTest(path=path.name, required_zero=name):
+                        self.assertIn(name, text)
             elif path.name == 'evidence.py':
                 for token in ('import subprocess', 'subprocess.', 'os.replace('):
                     with self.subTest(path=path.name, token=token):
