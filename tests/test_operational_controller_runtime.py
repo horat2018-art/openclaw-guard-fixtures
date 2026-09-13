@@ -54,7 +54,21 @@ class OperationalControllerRuntimeTests(unittest.TestCase):
                 )
             )
 
-    def test_openclaw_remains_unbound_until_ops02(self):
+    def test_openclaw_ops02_local_execution_is_qualified_with_zero_authority(self):
+        result = operational_controller.qualify_operational_result(
+            **self._base(
+                lane_id="OPENCLAW",
+                route_mode="CONTROLLED_DELEGATION",
+                disposition="EXECUTED",
+                wrapper_exit_code=0,
+                output_identity="7" * 64,
+            )
+        )
+        self.assertEqual(result.disposition, "EXECUTED")
+        self.assertEqual(result.execution_authority, "NONE")
+        self.assertEqual(result.live_send_authority, "NONE")
+
+    def test_openclaw_legacy_unbound_result_remains_requalifiable(self):
         result = operational_controller.qualify_operational_result(
             **self._base(
                 lane_id="OPENCLAW",
@@ -72,6 +86,7 @@ class OperationalControllerRuntimeTests(unittest.TestCase):
                     route_mode="CONTROLLED_DELEGATION",
                     disposition="EXECUTED",
                     wrapper_exit_code=0,
+                    output_identity=None,
                 )
             )
 

@@ -138,10 +138,14 @@ class OperationalRunResult:
             elif self.disposition == DISPOSITION_EXECUTED:
                 raise OperationalControllerContractError("Codex execution is not qualified while LIVE_SEND_AUTHORITY=NONE")
         elif self.lane_id == LANE_OPENCLAW:
-            if self.disposition != DISPOSITION_NOT_OPERATIONALLY_BOUND:
-                raise OperationalControllerContractError("OpenClaw must remain unbound until HAI-OPS-02")
-            if self.wrapper_exit_code is not None or self.output_identity is not None:
-                raise OperationalControllerContractError("unbound OpenClaw lane cannot expose wrapper execution")
+            if self.disposition == DISPOSITION_EXECUTED:
+                if self.wrapper_exit_code != 0 or self.output_identity is None:
+                    raise OperationalControllerContractError("successful OpenClaw execution requires exit 0 and output identity")
+            elif self.disposition == DISPOSITION_NOT_OPERATIONALLY_BOUND:
+                if self.wrapper_exit_code is not None or self.output_identity is not None:
+                    raise OperationalControllerContractError("legacy unbound OpenClaw lane cannot expose wrapper execution")
+            elif self.disposition == DISPOSITION_BLOCKED_BY_LIVE_POLICY:
+                raise OperationalControllerContractError("OpenClaw OPS-02 is a bounded local operator lane, not a cloud-live-policy lane")
 
     def to_dict(self) -> dict[str, object]:
         return {
