@@ -1,14 +1,16 @@
 """Bounded offline pre-live command-line entrypoint.
 
-The explicit ``offline`` command accepts one JSON request on stdin, admits an
-already-obtained provider response as exact base64 bytes, and delegates exactly
-once to the qualified deterministic top-level workflow.  It performs no
-network/provider/model/auth operation, retry, fallback, Human approval
-execution, autonomous state transition, Git mutation, or direct source/evidence
-filesystem access.  Final evidence publication remains owned by the existing
-qualified workflow/evidence boundary.
+Explicit bounded commands accept strict JSON requests on stdin. ``materialize``
+requalifies already-produced local deterministic records, constructs exact
+prepare inputs, and delegates to the zero-send prepare workflow. ``offline``
+admits an already-obtained provider response as exact base64 bytes, while
+``prepare``/``resume`` expose the two-step zero-send discontinuity. None performs
+network/provider/model/auth operation, retry, fallback, Human approval execution,
+autonomous state transition, Git mutation, or direct source/evidence filesystem
+access. Final evidence publication remains owned by the existing qualified
+workflow/evidence boundary.
 
-Calling ``main()`` without the explicit ``offline`` command preserves the
+Calling ``main()`` without one of the explicit bounded commands preserves the
 historical fail-closed CLI compatibility behavior.
 """
 
@@ -21,7 +23,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import TextIO
 
-from . import canonical, workflow
+from . import canonical, materialization, workflow
 from .failures import phase_not_implemented
 
 OFFLINE_CLI_SCHEMA_VERSION = "1.0.0"
@@ -31,8 +33,11 @@ PREPARE_CLI_OPERATION = "PREPARE_PRE_SEND_HANDOFF"
 PREPARE_CLI_COMMAND = "prepare"
 RESUME_CLI_OPERATION = "RESUME_PREOBTAINED_RESPONSE"
 RESUME_CLI_COMMAND = "resume"
+MATERIALIZE_CLI_OPERATION = "MATERIALIZE_LOCAL_PREPARE_INPUTS"
+MATERIALIZE_CLI_COMMAND = "materialize"
 OFFLINE_CLI_IMPLEMENTATION_COUNT = 1
 TWO_STEP_CLI_IMPLEMENTATION_COUNT = 1
+MATERIALIZATION_CLI_IMPLEMENTATION_COUNT = 1
 OFFLINE_CLI_INPUT_TRANSPORT = "STDIN_JSON_ONLY"
 OFFLINE_CLI_RAW_RESPONSE_ENCODING = "BASE64_EXACT_BYTES"
 OFFLINE_CLI_MAX_INPUT_BYTES = 8 * 1024 * 1024
@@ -222,6 +227,56 @@ _RESUME_OPTIONAL_FIELDS = frozenset(
 )
 _RESUME_FIELDS = _RESUME_REQUIRED_FIELDS | _RESUME_OPTIONAL_FIELDS
 
+_MATERIALIZE_TOP_LEVEL_FIELDS = frozenset(
+    {"schema_version", "operation", "materialization_arguments"}
+)
+_MATERIALIZE_REQUIRED_FIELDS = frozenset(
+    {
+        "discovery_result",
+        "normalization_result",
+        "dependency_bindings",
+        "provenance_chain",
+        "metrics_raw_source_bytes",
+        "metrics_normalized_bytes",
+        "metrics_package_bytes",
+        "metrics_cloud_context_bytes",
+        "metrics_raw_estimated_tokens",
+        "metrics_cloud_estimated_tokens",
+        "metrics_model_call_count",
+        "metrics_model_retry_count",
+        "metrics_failure_count",
+        "metrics_source_ref_count",
+        "metrics_missing_source_ref_count",
+        "metrics_identity_mismatch_count",
+        "metrics_observational_metadata",
+        "max_context_bytes",
+        "mr03_result_identity",
+        "mr04_result_identity",
+        "frozen_run_byte_budget",
+        "frozen_run_state",
+        "frozen_run_observational_metadata",
+        "disclosure_classification",
+        "disclosure_findings",
+        "disclosure_observational_metadata",
+        "model_identifier",
+        "human_authorization_reference",
+        "estimated_token_metadata",
+        "authorized_provider_identifier",
+        "authorized_account_boundary_reference",
+        "authorization_observational_metadata",
+        "legacy_verifier_checks",
+    }
+)
+_MATERIALIZE_OPTIONAL_FIELDS = frozenset(
+    {
+        "verifier_failure_records",
+        "prohibited_assumptions",
+        "context_observational_metadata",
+        "request_observational_metadata",
+    }
+)
+_MATERIALIZE_FIELDS = _MATERIALIZE_REQUIRED_FIELDS | _MATERIALIZE_OPTIONAL_FIELDS
+
 
 class OfflineCLIValidationError(ValueError):
     """The bounded offline CLI request is malformed or outside its contract."""
@@ -325,6 +380,24 @@ def _resume_signature_contract() -> tuple[frozenset[str], frozenset[str]]:
     return _RESUME_FIELDS, _RESUME_REQUIRED_FIELDS
 
 
+def _materialize_signature_contract() -> tuple[frozenset[str], frozenset[str]]:
+    signature = inspect.signature(materialization.materialize_prepare_inputs)
+    observed_fields: set[str] = set()
+    observed_required: set[str] = set()
+    for name, parameter in signature.parameters.items():
+        if parameter.kind not in {
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }:
+            raise OfflineCLIValidationError("materialization signature contains unsupported parameter kind")
+        observed_fields.add(name)
+        if parameter.default is inspect.Parameter.empty:
+            observed_required.add(name)
+    if observed_fields != _MATERIALIZE_FIELDS or observed_required != _MATERIALIZE_REQUIRED_FIELDS:
+        raise OfflineCLIValidationError("materialization signature drifted from frozen CLI contract")
+    return _MATERIALIZE_FIELDS, _MATERIALIZE_REQUIRED_FIELDS
+
+
 def _parse_request(text: str) -> tuple[dict[str, object], bytes]:
     try:
         value = canonical.parse_json_no_duplicates(text)
@@ -401,6 +474,27 @@ def _parse_resume_request(
         raise OfflineCLIValidationError("resume_arguments are missing required fields")
     raw = _decode_raw_response(request["raw_provider_response_base64"])
     return prepared, arguments, raw
+
+
+def _parse_materialize_request(text: str) -> dict[str, object]:
+    try:
+        value = canonical.parse_json_no_duplicates(text, identity_critical=False)
+    except (TypeError, ValueError, canonical.CanonicalizationError) as exc:
+        raise OfflineCLIValidationError("materialize request is not strict duplicate-free JSON") from exc
+    request = _mapping(value, "materialize request")
+    if set(request) != _MATERIALIZE_TOP_LEVEL_FIELDS:
+        raise OfflineCLIValidationError("materialize request fields are not exact")
+    if request["schema_version"] != OFFLINE_CLI_SCHEMA_VERSION:
+        raise OfflineCLIValidationError("materialize request schema_version is unsupported")
+    if request["operation"] != MATERIALIZE_CLI_OPERATION:
+        raise OfflineCLIValidationError("materialize request operation is unsupported")
+    arguments = dict(_mapping(request["materialization_arguments"], "materialization_arguments"))
+    allowed, required = _materialize_signature_contract()
+    if set(arguments) - allowed:
+        raise OfflineCLIValidationError("materialization_arguments contain unsupported fields")
+    if required - set(arguments):
+        raise OfflineCLIValidationError("materialization_arguments are missing required fields")
+    return arguments
 
 
 def _result_summary(
@@ -489,6 +583,36 @@ def run_resume(*, stdin: TextIO, stdout: TextIO) -> workflow.WorkflowComposition
     return result
 
 
+def run_materialize(
+    *, stdin: TextIO, stdout: TextIO
+) -> tuple[materialization.PrepareInputMaterialization, workflow.PreSendWorkflowPackage]:
+    """Materialize local deterministic inputs and immediately build the zero-send handoff."""
+
+    arguments = _parse_materialize_request(_read_bounded_text(stdin))
+    materialized = materialization.materialize_prepare_inputs(**arguments)
+    prepared = workflow.prepare_top_level_workflow(**dict(materialized.prepare_arguments))
+    _write_json(
+        stdout,
+        {
+            "schema_version": OFFLINE_CLI_SCHEMA_VERSION,
+            "operation": MATERIALIZE_CLI_OPERATION,
+            "status": "PASS",
+            "materialization": materialized.to_dict(),
+            "materialization_identity": materialized.materialization_identity,
+            "prepared_workflow": prepared.to_dict(),
+            "pre_send_identity": prepared.pre_send_identity,
+            "request_identity": prepared.cloud_request_record.request_identity,
+            "authorization_identity": prepared.cloud_execution_authorization_record.authorization_identity,
+            "handoff_identity": prepared.cloud_execution_handoff_record.handoff_identity,
+            "execution_authority": prepared.execution_authority,
+            "network_authority": False,
+            "model_provider_authority": False,
+            "state_transition_execution_authority": False,
+        },
+    )
+    return materialized, prepared
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -503,6 +627,7 @@ def main(
         (OFFLINE_CLI_COMMAND,): (OFFLINE_CLI_OPERATION, run_offline),
         (PREPARE_CLI_COMMAND,): (PREPARE_CLI_OPERATION, run_prepare),
         (RESUME_CLI_COMMAND,): (RESUME_CLI_OPERATION, run_resume),
+        (MATERIALIZE_CLI_COMMAND,): (MATERIALIZE_CLI_OPERATION, run_materialize),
     }
     selected = operations.get(args)
     if selected is None:
@@ -539,6 +664,7 @@ __all__ = [
     "run_offline",
     "run_prepare",
     "run_resume",
+    "run_materialize",
     "main",
     "OFFLINE_CLI_SCHEMA_VERSION",
     "OFFLINE_CLI_OPERATION",
@@ -547,8 +673,11 @@ __all__ = [
     "PREPARE_CLI_COMMAND",
     "RESUME_CLI_OPERATION",
     "RESUME_CLI_COMMAND",
+    "MATERIALIZE_CLI_OPERATION",
+    "MATERIALIZE_CLI_COMMAND",
     "OFFLINE_CLI_IMPLEMENTATION_COUNT",
     "TWO_STEP_CLI_IMPLEMENTATION_COUNT",
+    "MATERIALIZATION_CLI_IMPLEMENTATION_COUNT",
     "OFFLINE_CLI_INPUT_TRANSPORT",
     "OFFLINE_CLI_RAW_RESPONSE_ENCODING",
     "OFFLINE_CLI_MAX_INPUT_BYTES",

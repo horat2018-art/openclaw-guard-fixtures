@@ -17,10 +17,11 @@ test_command = "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest dis
 implementation = "HISTORICAL_FROZEN_BASELINE"
 
 [tool.hai_mr05.runtime]
-qualified_through = "HAI-MR-22B-R2"
+qualified_through = "HAI-MR-22C-R2"
 deterministic_runtime = "QUALIFIED_IMPLEMENTED"
-cli = "OFFLINE_TWO_STEP_PRELIVE_QUALIFIED"
-offline_cli_transport = "STDIN_JSON_ONE_SHOT_OR_PREPARE_RESUME_PREOBTAINED_RESPONSE_ONLY"
+cli = "OFFLINE_LOCAL_MATERIALIZATION_TWO_STEP_PRELIVE_QUALIFIED"
+offline_cli_transport = "STDIN_JSON_LOCAL_MATERIALIZE_OR_ONE_SHOT_OR_PREPARE_RESUME_PREOBTAINED_RESPONSE_ONLY"
+local_prepare_input_materialization = "QUALIFIED"
 pre_send_handoff = "ZERO_SEND_QUALIFIED"
 two_step_resume = "PREOBTAINED_RESPONSE_ONLY"
 live_external_execution = "NOT_IMPLEMENTED"
