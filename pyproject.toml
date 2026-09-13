@@ -17,12 +17,16 @@ test_command = "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest dis
 implementation = "HISTORICAL_FROZEN_BASELINE"
 
 [tool.hai_mr05.runtime]
-qualified_through = "HAI-ARCH-01-R2"
+qualified_through = "HAI-OPS-01-R2"
 deterministic_runtime = "QUALIFIED_IMPLEMENTED"
 multi_agent_governance_contract = "CANONICAL_SIBLING_LANES_QUALIFIED"
 memory_governance_contract = "GIT_EVIDENCE_PCL_OBSIDIAN_AGENT_MEMORY_PRIORITY_QUALIFIED"
 cross_agent_coordination_contract = "INWJUD_MEDIATED_NO_DIRECT_PEER_CALLS_QUALIFIED"
 run_ledger_contract = "HASH_CHAINED_TAMPER_EVIDENT_RECORDS_QUALIFIED"
+operational_controller_contract = "UNIFIED_EXECUTE_COLLECT_LEDGER_QUALIFIED"
+operational_controller_hermes = "BOUNDED_LOCAL_EXECUTION_QUALIFIED"
+operational_controller_codex = "LIVE_POLICY_BLOCK_QUALIFIED"
+operational_controller_openclaw = "NOT_BOUND_UNTIL_HAI_OPS_02"
 hermes_local_worker_authority = "BOUNDED_LOCAL_ONLY_EXTERNAL_RUNTIME"
 codex_independent_reviewer_authority = "READ_ONLY_EXTERNAL_RUNTIME_LIVE_INFERENCE_BLOCKED_BY_POLICY"
 cli = "OFFLINE_APPROVED_LOCAL_SOURCE_MATERIALIZATION_TWO_STEP_PRELIVE_QUALIFIED"
